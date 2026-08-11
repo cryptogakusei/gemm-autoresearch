@@ -170,13 +170,11 @@ copy_result() {
 
     ((COPY_INDEX += 1))
     quarantine_file="$SANDBOX_ROOT/result-$COPY_INDEX"
-    if ! "${DOCKER[@]}" cp \
-        "$CONTAINER_ID:/results/$relative_path" \
-        "$quarantine_file" >/dev/null 2>&1; then
-        return 0
-    fi
-    if [[ ! -f "$quarantine_file" || -L "$quarantine_file" ]]; then
-        echo "discarding non-regular result: $relative_path" >&2
+    if ! timeout --signal=TERM --kill-after=1s 5s \
+        "${DOCKER[@]}" exec "$CONTAINER_ID" \
+        /usr/bin/head --bytes="$((per_file_limit + 1))" -- \
+        "/results/$relative_path" \
+        >"$quarantine_file" 2>/dev/null; then
         rm -f -- "$quarantine_file"
         return 0
     fi
