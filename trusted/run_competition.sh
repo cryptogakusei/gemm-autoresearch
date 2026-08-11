@@ -12,7 +12,7 @@ PERFORMANCE_CASES="${PERFORMANCE_CASES:-$TRUSTED_DIR/cases/performance.tsv}"
 NVCC_BIN="${NVCC:-/usr/local/cuda/bin/nvcc}"
 CUDA_ARCH="${CUDA_ARCH:-sm_121}"
 CASE_TIMEOUT="${CASE_TIMEOUT:-180}"
-BUILD_DIR="$RESULTS_DIR/build"
+BUILD_DIR="${BUILD_DIR:-$RESULTS_DIR/build}"
 
 if [[ ! -f "$CANDIDATE_SOURCE" ]]; then
     echo "candidate source not found: $CANDIDATE_SOURCE" >&2

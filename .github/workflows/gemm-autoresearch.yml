@@ -84,59 +84,99 @@ jobs:
             core.setOutput("verifier_sha", verifierSha);
             core.setOutput("candidate_repository", candidateRepository);
 
-  # Fail closed until step 4 supplies a disposable candidate runtime. This job
-  # intentionally prevents public PRs from reaching the persistent DGX host.
-  pr-isolation-gate:
+  dgx-verify-and-score:
     name: Trusted DGX verifier
-    if: github.event_name == 'pull_request_target'
-    needs: candidate-scope
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require isolated candidate runtime
-        shell: bash
-        run: |
-          echo "Candidate scope passed, but native PR execution is disabled until the disposable DGX sandbox is installed." >&2
-          exit 1
-
-  # Manual dispatch remains available for trusted commits already on main.
-  dgx-manual-verify:
-    name: Trusted DGX verifier
-    if: github.event_name == 'workflow_dispatch'
     needs: candidate-scope
     runs-on: [self-hosted, linux, ARM64, dgx-spark]
     timeout-minutes: 45
     steps:
-      - name: Check out trusted candidate commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          path: candidate-source
-          ref: ${{ needs.candidate-scope.outputs.candidate_sha }}
-          persist-credentials: false
+      - name: Prepare per-run paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          job_root="$GITHUB_WORKSPACE/job-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [[ -e "$job_root" ]]; then
+            echo "per-run workspace already exists: $job_root" >&2
+            exit 1
+          fi
+          mkdir -m 700 -p "$job_root/candidate-input"
+          {
+            echo "JOB_ROOT=$job_root"
+            echo "CANDIDATE_SOURCE=$job_root/candidate-input/candidate_gemm.cu"
+            echo "TRUSTED_BASE=$job_root/trusted-base"
+            echo "RESULTS_DIR=$job_root/results"
+          } >>"$GITHUB_ENV"
 
       - name: Check out trusted base verifier
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          path: trusted-base
+          path: job-${{ github.run_id }}-${{ github.run_attempt }}/trusted-base
           ref: ${{ needs.candidate-scope.outputs.verifier_sha }}
           persist-credentials: false
 
-      - name: Run immutable-base verifier
+      - name: Download exact candidate blob as data
         shell: bash
         env:
-          RESULTS_DIR: ${{ github.workspace }}/competition-results
-          # Production should point this at a verifier-owned hidden manifest.
-          # CORRECTNESS_CASES: /opt/gemm-verifier/hidden-correctness.tsv
+          CANDIDATE_REPOSITORY: ${{ needs.candidate-scope.outputs.candidate_repository }}
+          CANDIDATE_SHA: ${{ needs.candidate-scope.outputs.candidate_sha }}
         run: |
-          trusted-base/trusted/run_competition.sh \
-            "$GITHUB_WORKSPACE/candidate-source/candidate/candidate_gemm.cu" \
+          set -euo pipefail
+          [[ "$CANDIDATE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          url="https://raw.githubusercontent.com/${CANDIDATE_REPOSITORY}/${CANDIDATE_SHA}/candidate/candidate_gemm.cu"
+          curl --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 \
+            --max-filesize 1048576 \
+            --output "$CANDIDATE_SOURCE.tmp" \
+            "$url"
+          candidate_bytes="$(stat -c '%s' -- "$CANDIDATE_SOURCE.tmp")"
+          if (( candidate_bytes == 0 || candidate_bytes > 1048576 )); then
+            echo "candidate has invalid size: $candidate_bytes" >&2
+            exit 1
+          fi
+          install -m 400 -- "$CANDIDATE_SOURCE.tmp" "$CANDIDATE_SOURCE"
+          rm -f -- "$CANDIDATE_SOURCE.tmp"
+
+      - name: Run candidate in disposable rootless GPU sandbox
+        shell: bash
+        run: |
+          "$TRUSTED_BASE/trusted/run_isolated_competition.sh" \
+            "$CANDIDATE_SOURCE" \
+            "$TRUSTED_BASE" \
             "$RESULTS_DIR"
+
+      - name: Record immutable candidate identity
+        if: always()
+        shell: bash
+        env:
+          CANDIDATE_REPOSITORY: ${{ needs.candidate-scope.outputs.candidate_repository }}
+          CANDIDATE_SHA: ${{ needs.candidate-scope.outputs.candidate_sha }}
+          VERIFIER_SHA: ${{ needs.candidate-scope.outputs.verifier_sha }}
+        run: |
+          if [[ -d "$RESULTS_DIR" ]]; then
+            printf '%s\n' \
+              "candidate_repository=$CANDIDATE_REPOSITORY" \
+              "candidate_sha=$CANDIDATE_SHA" \
+              "verifier_sha=$VERIFIER_SHA" \
+              >"$RESULTS_DIR/identity.txt"
+          fi
 
       - name: Upload verifier and benchmark artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: gemm-results-${{ needs.candidate-scope.outputs.candidate_sha }}
-          path: competition-results/
+          path: ${{ github.workspace }}/job-${{ github.run_id }}-${{ github.run_attempt }}/results/
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Remove per-run host workspace
+        if: always()
+        shell: bash
+        run: |
+          expected="$GITHUB_WORKSPACE/job-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [[ "${JOB_ROOT:-}" != "$expected" ]]; then
+            echo "refusing unexpected cleanup path: ${JOB_ROOT:-unset}" >&2
+            exit 1
+          fi
+          rm -rf -- "$JOB_ROOT"
