@@ -1,0 +1,4 @@
+results/
+*.o
+candidate_verifier
+candidate_benchmark

@@ -1,0 +1,13 @@
+# name M N K alpha beta seed
+tiny_square 16 16 16 1 0 1
+small_rectangular 32 128 64 1 0 2
+long_reduction 64 64 512 1 0 3
+tall_skinny 1024 128 32 1 0 4
+wide_short 128 1024 64 1 0 5
+medium_square 256 256 256 1 0 6
+alpha_beta 256 512 128 -0.75 0.25 7
+beta_only 512 128 64 0 1 8
+alternate_seed 512 128 1024 1 0 99
+large_square 1024 1024 1024 1 0 10
+target_square 2048 2048 2048 1 0 11
+large_rectangular 4096 256 512 1 0 12

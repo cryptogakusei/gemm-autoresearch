@@ -1,0 +1,77 @@
+name: Trusted GEMM autoresearch
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - candidate/**
+      - .github/workflows/gemm-autoresearch.yml
+      - .github/CODEOWNERS
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dgx-gemm-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  candidate-scope:
+    name: Candidate scope
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Reject protected-file modifications
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          forbidden="$(git diff --name-only "$base" "$head" | grep -Ev '^candidate/candidate_gemm\.cu$' || true)"
+          if [[ -n "$forbidden" ]]; then
+            echo "Autoresearch PR modified protected paths:" >&2
+            echo "$forbidden" >&2
+            exit 1
+          fi
+
+  dgx-verify-and-score:
+    name: Trusted DGX verifier
+    needs: candidate-scope
+    runs-on: [self-hosted, linux, ARM64, dgx-spark]
+    timeout-minutes: 45
+    steps:
+      - name: Check out candidate commit
+        uses: actions/checkout@v6
+        with:
+          path: candidate-source
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Check out trusted base verifier
+        uses: actions/checkout@v6
+        with:
+          path: trusted-base
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Run immutable-base verifier
+        shell: bash
+        env:
+          RESULTS_DIR: ${{ github.workspace }}/competition-results
+          # Production should point this at a verifier-owned hidden manifest.
+          # CORRECTNESS_CASES: /opt/gemm-verifier/hidden-correctness.tsv
+        run: |
+          trusted-base/trusted/run_competition.sh \
+            "$GITHUB_WORKSPACE/candidate-source/candidate/candidate_gemm.cu" \
+            "$RESULTS_DIR"
+
+      - name: Upload verifier and benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gemm-results-${{ github.event.pull_request.head.sha || github.sha }}
+          path: competition-results/
+          if-no-files-found: warn

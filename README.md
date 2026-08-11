@@ -1,0 +1,81 @@
+# Power-of-Two FP32 GEMM Autoresearch Competition
+
+## Objective
+
+Implement the fastest general-purpose contiguous row-major FP32 GEMM on the
+NVIDIA GB10 (`sm_121`):
+
+```text
+C = alpha * A * B + beta * C
+```
+
+`M`, `N`, and `K` are independent powers of two in the inclusive range
+`[16, 4096]`. Candidates must support every in-contract shape, not only square
+or benchmarked shapes.
+
+## Candidate boundary
+
+Autoresearch agents may modify only:
+
+```text
+candidate/candidate_gemm.cu
+```
+
+The function declared in `include/candidate_api.h` is the stable ABI. The
+candidate may use custom CUDA kernels and CUDA runtime APIs, but may not invoke
+cuBLAS, cuBLASLt, CUTLASS GEMM, or another prebuilt matrix-multiplication
+implementation. Tensor Cores and candidate-authored helper kernels are allowed.
+
+Allocations, compilation, and host/device copies are outside the timed region.
+Any candidate-side allocation or dispatch overhead inside
+`launch_candidate_gemm` is included in its measurement. Temporary workspace is
+currently limited implicitly by available device memory; a fixed limit should
+be added before admitting third-party competitors.
+
+## Correctness gate
+
+Every case must pass before performance is measured. The trusted verifier:
+
+- uses deterministic random FP32 values in `[-1, 1]`;
+- uses scalar CPU GEMM for smaller cases and pedantic cuBLAS for large cases;
+- checks every output element with `abs_tol=1e-2` and `rel_tol=1e-4`;
+- validates nontrivial `alpha` and `beta`;
+- detects mutations of A or B;
+- detects writes into guard regions around A, B, and C;
+- runs each case in a separate process with a timeout.
+
+Any mismatch, CUDA error, timeout, input mutation, or guard corruption rejects
+the candidate. There are no XFAIL cases inside the published contract.
+
+## Performance score
+
+Each performance case is measured against default cuBLAS in the same process.
+The final score is the geometric mean of:
+
+```text
+candidate_GFLOP/s / cuBLAS_GFLOP/s
+```
+
+A score of `0.70` means that the candidate achieves 70% of cuBLAS performance
+on average across the suite. Correctness failure gives no score.
+
+## Running on the DGX Spark
+
+```bash
+cd <gemm-autoresearch-repository>
+./trusted/run_competition.sh
+```
+
+Results are written under `results/<UTC timestamp>/`.
+
+## Verifier integrity
+
+The repository copy is reviewable documentation, not the final trust boundary.
+For CI, install `trusted/`, `include/candidate_api.h`, and the private hidden
+case manifest into a separate root-owned or verifier-owned directory on the
+DGX. CI must execute that trusted copy against the PR candidate. Protect the
+workflow and verifier paths with CODEOWNERS/rulesets, and require the trusted
+check before merging.
+
+The active workflow in `.github/workflows/gemm-autoresearch.yml` checks out
+verifier code from the PR base commit rather than the candidate commit.
