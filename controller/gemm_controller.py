@@ -1,10 +1,11 @@
 #!/usr/bin/python3
 """Trusted broker between an untrusted research agent and GitHub/DGX CI.
 
-The broker deliberately exposes only three operations over a Unix socket:
-start a research run, submit candidate source, and inspect status.  GitHub App
-credentials never cross that socket.  There is intentionally no merge, close,
-arbitrary-ref, arbitrary-path, or arbitrary-API operation.
+The broker deliberately exposes only four operations over a Unix socket:
+start a research run, submit candidate source, resume result collection for an
+already-submitted SHA, and inspect status. GitHub App credentials never cross
+that socket. There is intentionally no merge, close, arbitrary-ref,
+arbitrary-path, or arbitrary-API operation.
 """
 
 from __future__ import annotations
@@ -283,17 +284,31 @@ class GitHubClient:
         }
         if data is not None:
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            f"{API_ROOT}{path}", data=data, method=method, headers=headers
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = _read_limited(response, limit)
-        except urllib.error.HTTPError as exc:
-            raw = _read_limited(exc, 64_000)
-            raise GitHubError(exc.code, method, path, _safe_api_detail(raw)) from exc
-        except urllib.error.URLError as exc:
-            raise ControllerError(f"could not reach GitHub for {method} {path}: {exc.reason}") from exc
+        attempts = 3 if method == "GET" else 1
+        for attempt in range(attempts):
+            request = urllib.request.Request(
+                f"{API_ROOT}{path}", data=data, method=method, headers=headers
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    raw = _read_limited(response, limit)
+                break
+            except urllib.error.HTTPError as exc:
+                raw = _read_limited(exc, 64_000)
+                if exc.code in (500, 502, 503, 504) and attempt + 1 < attempts:
+                    time.sleep(1 + attempt)
+                    continue
+                raise GitHubError(exc.code, method, path, _safe_api_detail(raw)) from exc
+            except urllib.error.URLError as exc:
+                if attempt + 1 < attempts:
+                    # Verification remains strict on every attempt.  In
+                    # particular, never install an unverified SSL context to
+                    # work around a transient certificate-chain failure.
+                    time.sleep(1 + attempt)
+                    continue
+                raise ControllerError(
+                    f"could not reach GitHub for {method} {path}: {exc.reason}"
+                ) from exc
         if not raw:
             return None
         try:
@@ -797,6 +812,7 @@ class Controller:
         allowed_keys = {
             "status": {"version", "operation"},
             "start": {"version", "operation", "title"},
+            "resume": {"version", "operation", "hypothesis", "timeout_seconds"},
             "submit": {
                 "version",
                 "operation",
@@ -814,6 +830,14 @@ class Controller:
             return self.status()
         if operation == "start":
             return self.start(validate_title(request.get("title")))
+        if operation == "resume":
+            fallback_hypothesis = request.get("hypothesis")
+            if fallback_hypothesis is not None:
+                fallback_hypothesis = validate_hypothesis(fallback_hypothesis)
+            return self.resume(
+                validate_timeout(request.get("timeout_seconds", DEFAULT_WAIT_SECONDS)),
+                fallback_hypothesis,
+            )
         return self.submit(
             validate_candidate(request.get("candidate")),
             validate_hypothesis(request.get("hypothesis")),
@@ -833,6 +857,9 @@ class Controller:
                 "pr_number": active.get("pr_number"),
                 "pr_url": active.get("pr_url"),
                 "iteration": active.get("iteration", 0),
+                "pending_candidate_sha": active.get("pending", {}).get("candidate_sha")
+                if isinstance(active.get("pending"), dict)
+                else None,
                 "best": active.get("best"),
                 "last_result": active.get("history", [])[-1]
                 if active.get("history")
@@ -926,9 +953,184 @@ class Controller:
             raise ControllerError("GitHub returned an invalid artifact ID")
         return matches[0]
 
+    def _complete_submission(
+        self,
+        state_value: dict[str, Any],
+        run: dict[str, Any],
+        pending: dict[str, Any],
+        timeout: int,
+    ) -> dict[str, Any]:
+        candidate_sha = pending.get("candidate_sha")
+        hypothesis = pending.get("hypothesis")
+        next_iteration = pending.get("iteration")
+        submitted_at = pending.get("submitted_at")
+        pr_number = run.get("pr_number")
+        if (
+            not isinstance(candidate_sha, str)
+            or not SHA_RE.fullmatch(candidate_sha)
+            or not isinstance(hypothesis, str)
+            or isinstance(next_iteration, bool)
+            or not isinstance(next_iteration, int)
+            or next_iteration < 1
+            or not isinstance(submitted_at, (int, float))
+            or isinstance(submitted_at, bool)
+            or isinstance(pr_number, bool)
+            or not isinstance(pr_number, int)
+            or pr_number < 1
+        ):
+            raise ControllerError("pending submission state is invalid")
+        if run.get("head_sha") != candidate_sha or run.get("iteration") != next_iteration:
+            raise ControllerError("pending submission does not match the active research head")
+        if any(
+            item.get("candidate_sha") == candidate_sha
+            for item in run.get("history", [])
+            if isinstance(item, dict)
+        ):
+            raise ControllerError("active candidate result is already recorded")
+
+        workflow = self._wait_for_run(candidate_sha, float(submitted_at), timeout)
+        workflow_run_id = workflow.get("id")
+        workflow_url = workflow.get("html_url")
+        conclusion = workflow.get("conclusion")
+        if (
+            isinstance(workflow_run_id, bool)
+            or not isinstance(workflow_run_id, int)
+            or workflow_run_id < 1
+            or not isinstance(workflow_url, str)
+            or not workflow_url.startswith("https://github.com/")
+            or not isinstance(conclusion, str)
+        ):
+            raise ControllerError("GitHub returned invalid completed-workflow metadata")
+
+        artifact = self._artifact_for_run(workflow_run_id, candidate_sha)
+        archive = self.github.download_artifact(artifact["id"])
+        result = parse_artifact(
+            archive,
+            self.github.repository,
+            candidate_sha,
+            workflow_url,
+            conclusion,
+        )
+
+        previous_best = run.get("best")
+        score_value = result.get("score_geomean_vs_cublas")
+        if result.get("correctness") is True and isinstance(score_value, float):
+            if not isinstance(previous_best, dict) or score_value > previous_best.get(
+                "score_geomean_vs_cublas", -1.0
+            ):
+                decision = "new best"
+                run["best"] = {
+                    "iteration": next_iteration,
+                    "candidate_sha": candidate_sha,
+                    "score_geomean_vs_cublas": score_value,
+                    "worst_ratio": result.get("worst_ratio"),
+                }
+            else:
+                decision = "not improved"
+        else:
+            decision = "rejected"
+
+        history_item = {
+            "iteration": next_iteration,
+            "hypothesis": hypothesis,
+            "candidate_sha": candidate_sha,
+            "verifier_sha": result.get("verifier_sha"),
+            "workflow_url": workflow_url,
+            "status": result.get("status"),
+            "correctness": result.get("correctness"),
+            "score_geomean_vs_cublas": result.get("score_geomean_vs_cublas"),
+            "worst_ratio": result.get("worst_ratio"),
+            "worst_case": result.get("worst_case"),
+            "decision": decision,
+            "completed_at": int(time.time()),
+        }
+        run.setdefault("history", []).append(history_item)
+        run.pop("pending", None)
+        self.state_store.save(state_value)
+
+        body_warning = None
+        try:
+            self.github.update_pull_request_body(pr_number, build_pr_body(run))
+        except ControllerError:
+            # The immutable result is already durable locally.  A discussion-
+            # body synchronization failure must not turn a valid measurement
+            # into an apparently missing result or invite a duplicate commit.
+            body_warning = "result recorded, but PR summary synchronization failed"
+
+        response = {
+            "run_id": run["id"],
+            "iteration": next_iteration,
+            "pr_number": pr_number,
+            "pr_url": run["pr_url"],
+            "decision": decision,
+            "previous_best": previous_best,
+            "best": run.get("best"),
+            **result,
+        }
+        if body_warning is not None:
+            response["warning"] = body_warning
+        return response
+
+    def resume(self, timeout: int, fallback_hypothesis: str | None = None) -> dict[str, Any]:
+        state_value = self.state_store.load()
+        run = self._ensure_active_run(state_value)
+        candidate_sha = run.get("head_sha")
+        iteration = run.get("iteration")
+        pr_number = run.get("pr_number")
+        if (
+            not isinstance(candidate_sha, str)
+            or not SHA_RE.fullmatch(candidate_sha)
+            or isinstance(iteration, bool)
+            or not isinstance(iteration, int)
+            or iteration < 1
+            or isinstance(pr_number, bool)
+            or not isinstance(pr_number, int)
+            or pr_number < 1
+        ):
+            raise ControllerError("there is no submitted candidate to resume")
+        if any(
+            item.get("candidate_sha") == candidate_sha
+            for item in run.get("history", [])
+            if isinstance(item, dict)
+        ):
+            raise ControllerError("active candidate result is already recorded")
+
+        pr = self.github.pull_request(pr_number)
+        if pr.get("state") != "open" or pr.get("head", {}).get("sha") != candidate_sha:
+            raise ControllerError("research PR is closed or its head changed outside the controller")
+        if self.github.ref(run["branch"]) != candidate_sha:
+            raise ControllerError("research branch does not match the pending candidate")
+
+        pending = run.get("pending")
+        if not isinstance(pending, dict):
+            # Backward-compatible recovery for a submission made by the first
+            # controller release, which saved the SHA but not its hypothesis.
+            if fallback_hypothesis is None:
+                raise ControllerError(
+                    "legacy pending submission requires --hypothesis for recovery"
+                )
+            pending = {
+                "candidate_sha": candidate_sha,
+                "iteration": iteration,
+                "hypothesis": fallback_hypothesis,
+                "submitted_at": 0,
+            }
+            run["pending"] = pending
+            self.state_store.save(state_value)
+        return self._complete_submission(state_value, run, pending, timeout)
+
     def submit(self, candidate: bytes, hypothesis: str, timeout: int) -> dict[str, Any]:
         state_value = self.state_store.load()
         run = self._ensure_active_run(state_value)
+        if isinstance(run.get("pending"), dict) or (
+            isinstance(run.get("head_sha"), str)
+            and not any(
+                item.get("candidate_sha") == run.get("head_sha")
+                for item in run.get("history", [])
+                if isinstance(item, dict)
+            )
+        ):
+            raise ControllerError("a submitted candidate is pending; use gemmctl resume")
         iteration = run.get("iteration", 0)
         if isinstance(iteration, bool) or not isinstance(iteration, int) or iteration < 0:
             raise ControllerError("active research iteration is invalid")
@@ -977,78 +1179,14 @@ class Controller:
         # can therefore detect external branch changes instead of overwriting them.
         run["head_sha"] = candidate_sha
         run["iteration"] = next_iteration
-        self.state_store.save(state_value)
-
-        workflow = self._wait_for_run(candidate_sha, submitted_at, timeout)
-        run_id = workflow.get("id")
-        workflow_url = workflow.get("html_url")
-        conclusion = workflow.get("conclusion")
-        if (
-            isinstance(run_id, bool)
-            or not isinstance(run_id, int)
-            or run_id < 1
-            or not isinstance(workflow_url, str)
-            or not workflow_url.startswith("https://github.com/")
-            or not isinstance(conclusion, str)
-        ):
-            raise ControllerError("GitHub returned invalid completed-workflow metadata")
-
-        artifact = self._artifact_for_run(run_id, candidate_sha)
-        archive = self.github.download_artifact(artifact["id"])
-        result = parse_artifact(
-            archive,
-            self.github.repository,
-            candidate_sha,
-            workflow_url,
-            conclusion,
-        )
-
-        previous_best = run.get("best")
-        score_value = result.get("score_geomean_vs_cublas")
-        if result.get("correctness") is True and isinstance(score_value, float):
-            if not isinstance(previous_best, dict) or score_value > previous_best.get(
-                "score_geomean_vs_cublas", -1.0
-            ):
-                decision = "new best"
-                run["best"] = {
-                    "iteration": next_iteration,
-                    "candidate_sha": candidate_sha,
-                    "score_geomean_vs_cublas": score_value,
-                    "worst_ratio": result.get("worst_ratio"),
-                }
-            else:
-                decision = "not improved"
-        else:
-            decision = "rejected"
-
-        history_item = {
+        run["pending"] = {
+            "candidate_sha": candidate_sha,
             "iteration": next_iteration,
             "hypothesis": hypothesis,
-            "candidate_sha": candidate_sha,
-            "verifier_sha": result.get("verifier_sha"),
-            "workflow_url": workflow_url,
-            "status": result.get("status"),
-            "correctness": result.get("correctness"),
-            "score_geomean_vs_cublas": result.get("score_geomean_vs_cublas"),
-            "worst_ratio": result.get("worst_ratio"),
-            "worst_case": result.get("worst_case"),
-            "decision": decision,
-            "completed_at": int(time.time()),
+            "submitted_at": submitted_at,
         }
-        run.setdefault("history", []).append(history_item)
         self.state_store.save(state_value)
-        self.github.update_pull_request_body(pr_number, build_pr_body(run))
-
-        return {
-            "run_id": run["id"],
-            "iteration": next_iteration,
-            "pr_number": pr_number,
-            "pr_url": run["pr_url"],
-            "decision": decision,
-            "previous_best": previous_best,
-            "best": run.get("best"),
-            **result,
-        }
+        return self._complete_submission(state_value, run, run["pending"], timeout)
 
 
 def _recv_exact(

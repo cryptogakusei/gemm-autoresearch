@@ -134,6 +134,18 @@ class FakeGitHub:
         return artifact_bytes(self.head_sha)
 
 
+class FailingOnceGitHub(FakeGitHub):
+    def __init__(self) -> None:
+        super().__init__()
+        self.workflow_attempts = 0
+
+    def workflow_runs(self, candidate_sha: str) -> list[dict[str, object]]:
+        self.workflow_attempts += 1
+        if self.workflow_attempts == 1:
+            raise controller.ControllerError("transient API failure")
+        return super().workflow_runs(candidate_sha)
+
+
 class ValidationTests(unittest.TestCase):
     def test_candidate_limits_and_nul(self) -> None:
         self.assertEqual(controller.validate_candidate("hello"), b"hello")
@@ -246,6 +258,48 @@ class ControllerFlowTests(unittest.TestCase):
             store.save(state)
             with self.assertRaisesRegex(controller.ControllerError, "still has open PR"):
                 instance.start("second")
+
+    def test_failed_result_collection_is_resumable_without_a_new_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            github = FailingOnceGitHub()
+            store = controller.StateStore(Path(directory) / "state.json")
+            instance = controller.Controller(github, store, 3)
+            with self.assertRaisesRegex(controller.ControllerError, "transient"):
+                instance.submit(b"// candidate\n", "test recovery", 60)
+            submitted_sha = store.load()["active_run"]["head_sha"]
+            self.assertEqual(github.counter, 2)
+            result = instance.dispatch(
+                {"version": 1, "operation": "resume", "timeout_seconds": 60}
+            )
+            self.assertEqual(result["candidate_sha"], submitted_sha)
+            self.assertEqual(github.counter, 2)
+            self.assertNotIn("pending", store.load()["active_run"])
+
+    def test_legacy_pending_sha_can_be_recovered_with_hypothesis(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            github = FakeGitHub()
+            store = controller.StateStore(Path(directory) / "state.json")
+            instance = controller.Controller(github, store, 3)
+            instance.start("legacy")
+            state = store.load()
+            run = state["active_run"]
+            legacy_sha = "9" * 40
+            run.update(
+                {
+                    "pr_number": 7,
+                    "pr_url": "https://github.com/example/pr/7",
+                    "head_sha": legacy_sha,
+                    "iteration": 1,
+                }
+            )
+            store.save(state)
+            github.branch = run["branch"]
+            github.head_sha = legacy_sha
+            with self.assertRaisesRegex(controller.ControllerError, "requires --hypothesis"):
+                instance.resume(60)
+            result = instance.resume(60, "recover the original submission")
+            self.assertEqual(result["candidate_sha"], legacy_sha)
+            self.assertEqual(result["decision"], "new best")
 
 
 if __name__ == "__main__":

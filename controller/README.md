@@ -4,11 +4,13 @@ The controller is the only component allowed to hold the repository-scoped
 GitHub App private key. An untrusted research process runs as `gemm-agent` and
 can communicate through `/run/gemm-autoresearch/controller.sock` only.
 
-The socket protocol deliberately offers three operations:
+The socket protocol deliberately offers four operations:
 
 - `gemmctl start --title TITLE` starts local state for one research PR;
 - `gemmctl submit FILE --hypothesis TEXT` submits the bytes of `FILE` at the
   hard-coded `candidate/candidate_gemm.cu` path and waits for the DGX result;
+- `gemmctl resume` resumes result collection for the exact already-submitted
+  SHA after a controller restart or transient API failure;
 - `gemmctl status` reports the last and best accepted measurements.
 
 There is no generic GitHub API proxy and no operation to choose a repository,

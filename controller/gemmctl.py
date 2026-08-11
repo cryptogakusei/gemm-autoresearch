@@ -92,6 +92,20 @@ def build_parser() -> argparse.ArgumentParser:
     start = subparsers.add_parser("start", help="start a new run after the previous PR is closed")
     start.add_argument("--title", default="GEMM autoresearch run")
 
+    resume = subparsers.add_parser(
+        "resume", help="resume result collection for the exact pending candidate SHA"
+    )
+    resume.add_argument(
+        "--hypothesis",
+        help="required only to recover a pending submission from controller v1",
+    )
+    resume.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=DEFAULT_WAIT_SECONDS,
+        help="DGX wait limit (60–2700 seconds; default: 2700)",
+    )
+
     submit = subparsers.add_parser(
         "submit", help="submit one candidate and wait for the trusted DGX result"
     )
@@ -113,6 +127,11 @@ def main() -> int:
     try:
         if arguments.command == "start":
             request["title"] = arguments.title
+        elif arguments.command == "resume":
+            request["timeout_seconds"] = arguments.timeout_seconds
+            if arguments.hypothesis is not None:
+                request["hypothesis"] = arguments.hypothesis
+            timeout = arguments.timeout_seconds
         elif arguments.command == "submit":
             request.update(
                 {
