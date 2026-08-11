@@ -1,13 +1,18 @@
 name: Trusted GEMM autoresearch
 
 on:
-  # Pull-request execution is restored after the trusted workflow and
-  # candidate runtime are isolated. Until then, do not execute public PR code
-  # on the persistent DGX runner.
+  # The workflow definition and default checkout come from protected main, not
+  # from the pull request. PR source remains untrusted data.
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
+# pull_request_target normally has elevated trust. Keep its token read-only and
+# do not expose repository secrets to this workflow.
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: dgx-gemm-${{ github.event.pull_request.number || github.ref }}
@@ -17,41 +22,103 @@ jobs:
   candidate-scope:
     name: Candidate scope
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      candidate_sha: ${{ steps.scope.outputs.candidate_sha }}
+      verifier_sha: ${{ steps.scope.outputs.verifier_sha }}
+      candidate_repository: ${{ steps.scope.outputs.candidate_repository }}
     steps:
-      - uses: actions/checkout@v6
+      - name: Resolve immutable refs and reject protected changes
+        id: scope
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          fetch-depth: 0
-      - name: Reject protected-file modifications
-        if: github.event_name == 'pull_request'
+          script: |
+            const shaPattern = /^[0-9a-f]{40}$/;
+            const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+            if (context.eventName === "workflow_dispatch") {
+              if (!shaPattern.test(context.sha)) {
+                core.setFailed("Manual dispatch did not resolve to a full commit SHA.");
+                return;
+              }
+              core.setOutput("candidate_sha", context.sha);
+              core.setOutput("verifier_sha", context.sha);
+              core.setOutput("candidate_repository", `${context.repo.owner}/${context.repo.repo}`);
+              return;
+            }
+
+            const pr = context.payload.pull_request;
+            if (!pr || pr.base.ref !== "main") {
+              core.setFailed("Only pull requests targeting main are accepted.");
+              return;
+            }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            const changed = files.map((file) => file.filename);
+            const allowed = "candidate/candidate_gemm.cu";
+            if (changed.length !== 1 || changed[0] !== allowed) {
+              core.setFailed(
+                `Autoresearch PRs must change exactly ${allowed}. Changed: ${changed.join(", ") || "none"}`
+              );
+              return;
+            }
+
+            const candidateSha = pr.head.sha;
+            const verifierSha = pr.base.sha;
+            const candidateRepository = pr.head.repo?.full_name;
+            if (!shaPattern.test(candidateSha) || !shaPattern.test(verifierSha)) {
+              core.setFailed("GitHub supplied an invalid candidate or verifier SHA.");
+              return;
+            }
+            if (!candidateRepository || !repoPattern.test(candidateRepository)) {
+              core.setFailed("GitHub supplied an invalid candidate repository name.");
+              return;
+            }
+
+            core.setOutput("candidate_sha", candidateSha);
+            core.setOutput("verifier_sha", verifierSha);
+            core.setOutput("candidate_repository", candidateRepository);
+
+  # Fail closed until step 4 supplies a disposable candidate runtime. This job
+  # intentionally prevents public PRs from reaching the persistent DGX host.
+  pr-isolation-gate:
+    name: Trusted DGX verifier
+    if: github.event_name == 'pull_request_target'
+    needs: candidate-scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require isolated candidate runtime
         shell: bash
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
-          head="${{ github.event.pull_request.head.sha }}"
-          forbidden="$(git diff --name-only "$base" "$head" | grep -Ev '^candidate/candidate_gemm\.cu$' || true)"
-          if [[ -n "$forbidden" ]]; then
-            echo "Autoresearch PR modified protected paths:" >&2
-            echo "$forbidden" >&2
-            exit 1
-          fi
+          echo "Candidate scope passed, but native PR execution is disabled until the disposable DGX sandbox is installed." >&2
+          exit 1
 
-  dgx-verify-and-score:
+  # Manual dispatch remains available for trusted commits already on main.
+  dgx-manual-verify:
     name: Trusted DGX verifier
+    if: github.event_name == 'workflow_dispatch'
     needs: candidate-scope
     runs-on: [self-hosted, linux, ARM64, dgx-spark]
     timeout-minutes: 45
     steps:
-      - name: Check out candidate commit
-        uses: actions/checkout@v6
+      - name: Check out trusted candidate commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: candidate-source
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ needs.candidate-scope.outputs.candidate_sha }}
           persist-credentials: false
 
       - name: Check out trusted base verifier
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: trusted-base
-          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ needs.candidate-scope.outputs.verifier_sha }}
           persist-credentials: false
 
       - name: Run immutable-base verifier
@@ -67,8 +134,9 @@ jobs:
 
       - name: Upload verifier and benchmark artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: gemm-results-${{ github.event.pull_request.head.sha || github.sha }}
+          name: gemm-results-${{ needs.candidate-scope.outputs.candidate_sha }}
           path: competition-results/
           if-no-files-found: warn
+          retention-days: 14
