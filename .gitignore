@@ -2,3 +2,5 @@ results/
 *.o
 candidate_verifier
 candidate_benchmark
+__pycache__/
+*.py[cod]

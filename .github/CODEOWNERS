@@ -1,6 +1,7 @@
 # Trusted competition assets require explicit owner review.
 /include/ @cryptogakusei
 /trusted/ @cryptogakusei
+/controller/ @cryptogakusei
 /README.md @cryptogakusei
 /AUTORESEARCH_PROMPT.md @cryptogakusei
 /.github/workflows/ @cryptogakusei

@@ -79,3 +79,15 @@ check before merging.
 
 The active workflow in `.github/workflows/gemm-autoresearch.yml` checks out
 verifier code from the PR base commit rather than the candidate commit.
+
+## Autonomous controller
+
+The optional trusted broker under `controller/` lets an unprivileged research
+agent submit candidate bytes without receiving GitHub credentials. It creates
+or advances one `autoresearch/run-*` branch, opens one PR, waits for the exact
+candidate-SHA workflow run, validates the bounded DGX artifact, and records the
+best correct score. See `controller/README.md` for installation and use.
+
+The broker exposes no generic GitHub operation and no merge action. Its source
+is owner-protected, while the PR workflow continues to reject every changed
+path except `candidate/candidate_gemm.cu`.
