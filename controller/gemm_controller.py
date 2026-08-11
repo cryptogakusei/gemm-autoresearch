@@ -686,9 +686,14 @@ def parse_artifact(
             "network": "none",
             "read_only_root": "true",
             "capabilities": "none",
+            "gpu_lease": "exclusive",
+            "gpu_idle_checks": "passed",
         }
         if any(sandbox.get(key) != value for key, value in required_sandbox.items()):
             raise ControllerError("DGX artifact does not attest the required sandbox properties")
+        gpu_lock_wait = sandbox.get("gpu_lock_wait_seconds", "")
+        if not re.fullmatch(r"[0-9]{1,3}", gpu_lock_wait) or int(gpu_lock_wait) > 300:
+            raise ControllerError("DGX artifact contains an invalid GPU lock wait")
         sandbox_exit = sandbox.get("container_exit_code", "")
         if not re.fullmatch(r"[0-9]{1,3}", sandbox_exit):
             raise ControllerError("DGX artifact contains an invalid sandbox exit code")
@@ -706,6 +711,9 @@ def parse_artifact(
                 "network": "none",
                 "read_only_root": True,
                 "capabilities": "none",
+                "gpu_lease": "exclusive",
+                "gpu_idle_checks": "passed",
+                "gpu_lock_wait_seconds": int(gpu_lock_wait),
                 "container_exit_code": int(sandbox_exit),
             },
         }

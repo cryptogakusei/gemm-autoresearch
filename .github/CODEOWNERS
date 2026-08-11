@@ -2,6 +2,9 @@
 /include/ @cryptogakusei
 /trusted/ @cryptogakusei
 /controller/ @cryptogakusei
+/agent/ @cryptogakusei
+/ops/ @cryptogakusei
+/AGENTS.md @cryptogakusei
 /README.md @cryptogakusei
 /AUTORESEARCH_PROMPT.md @cryptogakusei
 /.github/workflows/ @cryptogakusei

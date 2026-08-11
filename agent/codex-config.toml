@@ -1,0 +1,35 @@
+default_permissions = "gemm-autoresearch"
+web_search = "disabled"
+cli_auth_credentials_store = "file"
+
+[shell_environment_policy]
+inherit = "core"
+ignore_default_excludes = false
+
+[features]
+apps = false
+goals = false
+hooks = false
+memories = false
+multi_agent = false
+remote_plugin = false
+
+[permissions.gemm-autoresearch]
+description = "Read the trusted GEMM repository and edit only the candidate source."
+
+[permissions.gemm-autoresearch.filesystem]
+":root" = "deny"
+":minimal" = "read"
+":tmpdir" = "deny"
+":slash_tmp" = "deny"
+"/run/gemm-autoresearch" = "read"
+
+[permissions.gemm-autoresearch.filesystem.":workspace_roots"]
+"." = "read"
+"candidate" = "write"
+
+[permissions.gemm-autoresearch.network]
+enabled = false
+
+[permissions.gemm-autoresearch.network.unix_sockets]
+"/run/gemm-autoresearch/controller.sock" = "allow"

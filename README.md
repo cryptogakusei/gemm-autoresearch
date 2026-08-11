@@ -91,3 +91,21 @@ best correct score. See `controller/README.md` for installation and use.
 The broker exposes no generic GitHub operation and no merge action. Its source
 is owner-protected, while the PR workflow continues to reject every changed
 path except `candidate/candidate_gemm.cu`.
+
+## Autonomous iteration and GPU exclusivity
+
+`ops/install-step6.sh` creates a root-owned host GPU lease shared with the
+dedicated Actions runner. Every trusted measurement holds that lease and
+checks three times that no other CUDA compute process exists before starting the
+sandbox. A contaminated or uncoordinated GPU fails closed instead of producing
+a score.
+
+The optional `gemm-autoresearch-agent.service` runs one Codex experiment as the
+unprivileged `gemm-agent` account. It has a read-only host, write access only to
+its Codex state, run logs, and candidate directory, and a private `/dev` with
+no NVIDIA devices. The agent can reach the narrow controller socket but still
+cannot access GitHub credentials or execute candidate code on the host GPU.
+Its root-owned Codex permission profile also denies model-generated commands
+read access outside the minimal runtime and trusted workspace, including the
+Codex authentication cache, and denies every network destination except the
+controller's exact Unix socket.

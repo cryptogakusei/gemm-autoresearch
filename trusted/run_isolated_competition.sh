@@ -9,6 +9,11 @@ readonly MAX_ARTIFACT_BYTES=134217728
 readonly CONTAINER_TIMEOUT_SECONDS=2400
 readonly DOCKER_CLI=/usr/bin/docker
 readonly DOCKER_CONTEXT=rootless
+readonly FLOCK_BIN=/usr/bin/flock
+readonly NVIDIA_SMI_BIN=/usr/bin/nvidia-smi
+readonly GPU_LOCK_FILE=/run/lock/gemm-autoresearch/gpu.lock
+readonly GPU_LOCK_TIMEOUT_SECONDS=300
+readonly GPU_IDLE_SETTLE_SECONDS=5
 
 if [[ $# -ne 3 ]]; then
     echo "usage: $0 CANDIDATE_SOURCE COMPETITION_DIR RESULTS_DIR" >&2
@@ -48,6 +53,47 @@ if [[ -e "$RESULTS_DIR" ]]; then
     exit 2
 fi
 mkdir -m 700 -- "$RESULTS_DIR"
+
+if [[ ! -f "$GPU_LOCK_FILE" || -L "$GPU_LOCK_FILE" ]]; then
+    echo "trusted GPU lease is missing or unsafe: $GPU_LOCK_FILE" >&2
+    exit 2
+fi
+if [[ ! -x "$FLOCK_BIN" || ! -x "$NVIDIA_SMI_BIN" ]]; then
+    echo "GPU lease requires flock and nvidia-smi" >&2
+    exit 2
+fi
+
+GPU_LOCK_STARTED=$SECONDS
+if ! exec {GPU_LOCK_FD}<>"$GPU_LOCK_FILE"; then
+    echo "cannot open trusted GPU lease: $GPU_LOCK_FILE" >&2
+    exit 2
+fi
+if ! "$FLOCK_BIN" --exclusive --timeout "$GPU_LOCK_TIMEOUT_SECONDS" "$GPU_LOCK_FD"; then
+    echo "timed out waiting for the exclusive GPU lease" >&2
+    exit 2
+fi
+GPU_LOCK_WAIT_SECONDS=$((SECONDS - GPU_LOCK_STARTED))
+
+check_gpu_idle() {
+    local phase="$1"
+    local processes compact
+    if ! processes="$($NVIDIA_SMI_BIN \
+        --query-compute-apps=pid,process_name \
+        --format=csv,noheader 2>&1)"; then
+        echo "could not verify GPU idleness during $phase: $processes" >&2
+        return 1
+    fi
+    compact="${processes//[[:space:]]/}"
+    if [[ -n "$compact" ]]; then
+        echo "refusing contaminated benchmark; GPU compute processes exist during $phase:" >&2
+        printf '%s\n' "$processes" >&2
+        return 1
+    fi
+}
+
+check_gpu_idle initial-check
+sleep "$GPU_IDLE_SETTLE_SECONDS"
+check_gpu_idle settled-check
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 DOCKER=("$DOCKER_CLI" --context "$DOCKER_CONTEXT")
@@ -121,6 +167,7 @@ CONTAINER_ID="$("${DOCKER[@]}" create \
     /candidate/candidate_gemm.cu \
     /results)"
 
+check_gpu_idle launch-check
 "${DOCKER[@]}" start "$CONTAINER_ID" >/dev/null
 deadline=$((SECONDS + CONTAINER_TIMEOUT_SECONDS))
 completed=false
@@ -154,6 +201,9 @@ rootless=true
 network=none
 read_only_root=true
 capabilities=none
+gpu_lease=exclusive
+gpu_idle_checks=passed
+gpu_lock_wait_seconds=$GPU_LOCK_WAIT_SECONDS
 candidate_bytes=$candidate_bytes
 artifact_bytes=0
 container_exit_code=$container_status
@@ -224,6 +274,9 @@ rootless=true
 network=none
 read_only_root=true
 capabilities=none
+gpu_lease=exclusive
+gpu_idle_checks=passed
+gpu_lock_wait_seconds=$GPU_LOCK_WAIT_SECONDS
 candidate_bytes=$candidate_bytes
 artifact_bytes=$COPIED_BYTES
 container_exit_code=$container_status

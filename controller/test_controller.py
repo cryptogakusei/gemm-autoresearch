@@ -19,6 +19,8 @@ def artifact_bytes(
     *,
     score: float = 0.25,
     correctness_status: str = "PASS",
+    include_gpu_attestation: bool = True,
+    gpu_lock_wait_seconds: str = "0",
 ) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -28,17 +30,25 @@ def artifact_bytes(
             f"candidate_sha={candidate_sha}\n"
             f"verifier_sha={'a' * 40}\n",
         )
-        archive.writestr(
-            "sandbox.txt",
+        sandbox = (
             "image=example@sha256:deadbeef\n"
             "rootless=true\n"
             "network=none\n"
             "read_only_root=true\n"
             "capabilities=none\n"
+        )
+        if include_gpu_attestation:
+            sandbox += (
+                "gpu_lease=exclusive\n"
+                "gpu_idle_checks=passed\n"
+                f"gpu_lock_wait_seconds={gpu_lock_wait_seconds}\n"
+            )
+        sandbox += (
             "candidate_bytes=100\n"
             "artifact_bytes=200\n"
-            f"container_exit_code={0 if correctness_status == 'PASS' else 1}\n",
+            f"container_exit_code={0 if correctness_status == 'PASS' else 1}\n"
         )
+        archive.writestr("sandbox.txt", sandbox)
         archive.writestr(
             "correctness.csv",
             ",".join(controller.CORRECTNESS_HEADER)
@@ -246,6 +256,28 @@ class ArtifactTests(unittest.TestCase):
                 artifact_bytes("b" * 40),
                 "cryptogakusei/gemm-autoresearch",
                 "c" * 40,
+                "https://github.com/example/actions/1",
+                "success",
+            )
+
+    def test_rejects_artifact_without_exclusive_gpu_attestation(self) -> None:
+        sha = "b" * 40
+        with self.assertRaisesRegex(controller.ControllerError, "sandbox properties"):
+            controller.parse_artifact(
+                artifact_bytes(sha, include_gpu_attestation=False),
+                "cryptogakusei/gemm-autoresearch",
+                sha,
+                "https://github.com/example/actions/1",
+                "success",
+            )
+
+    def test_rejects_invalid_gpu_lock_wait(self) -> None:
+        sha = "b" * 40
+        with self.assertRaisesRegex(controller.ControllerError, "GPU lock wait"):
+            controller.parse_artifact(
+                artifact_bytes(sha, gpu_lock_wait_seconds="301"),
+                "cryptogakusei/gemm-autoresearch",
+                sha,
                 "https://github.com/example/actions/1",
                 "success",
             )
