@@ -1,3 +1,4 @@
+// Step 5 controller smoke test: behavior intentionally matches the baseline.
 #include "candidate_api.h"
 
 namespace {
