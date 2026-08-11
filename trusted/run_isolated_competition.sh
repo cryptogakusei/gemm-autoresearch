@@ -107,7 +107,7 @@ CONTAINER_ID="$("${DOCKER[@]}" create \
     --mount "type=bind,src=$SANDBOX_ROOT/competition,dst=/competition,readonly" \
     --mount "type=bind,src=$SANDBOX_ROOT/control,dst=/control,readonly" \
     --tmpfs /tmp:rw,nosuid,nodev,size=1g,mode=1777 \
-    --tmpfs /build:rw,nosuid,nodev,size=4g,mode=700 \
+    --tmpfs /build:rw,nosuid,nodev,exec,size=4g,mode=700 \
     --tmpfs /results:rw,nosuid,nodev,noexec,size=512m,mode=700 \
     --tmpfs /state:rw,nosuid,nodev,noexec,size=1m,mode=700 \
     --env HOME=/tmp \
