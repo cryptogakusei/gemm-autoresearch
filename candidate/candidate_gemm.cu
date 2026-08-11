@@ -52,3 +52,5 @@ extern "C" cudaError_t launch_candidate_gemm(
         A, B, C, alpha, beta, M, N, K);
     return cudaGetLastError();
 }
+
+// Step 3 trust-boundary test: this candidate-only change must never control CI.
