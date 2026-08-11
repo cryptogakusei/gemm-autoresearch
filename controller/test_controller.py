@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
+import urllib.error
 import zipfile
 
 from controller import gemm_controller as controller
@@ -174,6 +176,55 @@ class ValidationTests(unittest.TestCase):
             store.save(value)
             self.assertEqual(store.load(), value)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
+class ConnectionRetryTests(unittest.TestCase):
+    def test_safe_get_retries_a_fresh_verified_connection(self) -> None:
+        authentication = mock.Mock()
+        authentication.token.return_value = "temporary-token"
+        github = controller.GitHubClient(
+            "cryptogakusei/gemm-autoresearch", authentication
+        )
+        with mock.patch.object(controller.time, "sleep"), mock.patch.object(
+            controller.urllib.request,
+            "urlopen",
+            side_effect=[urllib.error.URLError("certificate failure"), io.BytesIO(b"{}")],
+        ) as urlopen:
+            self.assertEqual(github.api("GET", "/meta"), {})
+        self.assertEqual(urlopen.call_count, 2)
+
+    def test_repository_mutation_is_not_retried(self) -> None:
+        authentication = mock.Mock()
+        authentication.token.return_value = "temporary-token"
+        github = controller.GitHubClient(
+            "cryptogakusei/gemm-autoresearch", authentication
+        )
+        with mock.patch.object(
+            controller.urllib.request,
+            "urlopen",
+            side_effect=urllib.error.URLError("connection lost"),
+        ) as urlopen, self.assertRaises(controller.ControllerError):
+            github.api("POST", "/mutation", {"example": True})
+        self.assertEqual(urlopen.call_count, 1)
+
+    def test_token_mint_retries_without_weakening_verification(self) -> None:
+        authentication = object.__new__(controller.AppAuthentication)
+        authentication.app_id = 1
+        authentication.installation_id = 2
+        authentication.repository = "cryptogakusei/gemm-autoresearch"
+        authentication.key_path = Path("/unused")
+        authentication._token = None
+        authentication._expires_at = 0.0
+        response = io.BytesIO(b'{"token":"short-lived","expires_at":"soon"}')
+        with mock.patch.object(authentication, "_jwt", return_value="signed-jwt"), mock.patch.object(
+            controller.time, "sleep"
+        ), mock.patch.object(
+            controller.urllib.request,
+            "urlopen",
+            side_effect=[urllib.error.URLError("certificate failure"), response],
+        ) as urlopen:
+            self.assertEqual(authentication.token(), "short-lived")
+        self.assertEqual(urlopen.call_count, 2)
 
 
 class ArtifactTests(unittest.TestCase):

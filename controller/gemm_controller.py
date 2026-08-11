@@ -226,26 +226,39 @@ class AppAuthentication:
                 "pull_requests": "write",
             },
         }
-        request = urllib.request.Request(
-            f"{API_ROOT}{path}",
-            data=_json_bytes(body),
-            method="POST",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self._jwt()}",
-                "Content-Type": "application/json",
-                "User-Agent": USER_AGENT,
-                "X-GitHub-Api-Version": API_VERSION,
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = _read_limited(response, 1_000_000)
-        except urllib.error.HTTPError as exc:
-            raw = _read_limited(exc, 64_000)
-            raise GitHubError(exc.code, "POST", path, _safe_api_detail(raw)) from exc
-        except urllib.error.URLError as exc:
-            raise ControllerError(f"could not reach GitHub while minting a token: {exc.reason}") from exc
+        for attempt in range(3):
+            request = urllib.request.Request(
+                f"{API_ROOT}{path}",
+                data=_json_bytes(body),
+                method="POST",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {self._jwt()}",
+                    "Content-Type": "application/json",
+                    "User-Agent": USER_AGENT,
+                    "X-GitHub-Api-Version": API_VERSION,
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    raw = _read_limited(response, 1_000_000)
+                break
+            except urllib.error.HTTPError as exc:
+                raw = _read_limited(exc, 64_000)
+                if exc.code in (500, 502, 503, 504) and attempt < 2:
+                    time.sleep(1 + attempt)
+                    continue
+                raise GitHubError(exc.code, "POST", path, _safe_api_detail(raw)) from exc
+            except urllib.error.URLError as exc:
+                if attempt < 2:
+                    # Minting another short-lived, identically down-scoped token
+                    # is safe if a response was lost. Verification remains strict
+                    # on every fresh TLS connection.
+                    time.sleep(1 + attempt)
+                    continue
+                raise ControllerError(
+                    f"could not reach GitHub while minting a token: {exc.reason}"
+                ) from exc
 
         try:
             parsed = json.loads(raw)
@@ -447,29 +460,40 @@ class GitHubClient:
 
     def download_artifact(self, artifact_id: int) -> bytes:
         path = self.repo_path(f"/actions/artifacts/{artifact_id}/zip")
-        request = urllib.request.Request(
-            f"{API_ROOT}{path}",
-            method="GET",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self.authentication.token()}",
-                "User-Agent": USER_AGENT,
-                "X-GitHub-Api-Version": API_VERSION,
-            },
-        )
         opener = urllib.request.build_opener(_NoRedirect)
-        try:
-            response = opener.open(request, timeout=30)
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (301, 302, 303, 307, 308):
+        location = None
+        for attempt in range(3):
+            request = urllib.request.Request(
+                f"{API_ROOT}{path}",
+                method="GET",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {self.authentication.token()}",
+                    "User-Agent": USER_AGENT,
+                    "X-GitHub-Api-Version": API_VERSION,
+                },
+            )
+            try:
+                response = opener.open(request, timeout=30)
+            except urllib.error.HTTPError as exc:
+                if exc.code in (301, 302, 303, 307, 308):
+                    location = exc.headers.get("Location")
+                    break
                 raw = _read_limited(exc, 64_000)
+                if exc.code in (500, 502, 503, 504) and attempt < 2:
+                    time.sleep(1 + attempt)
+                    continue
                 raise GitHubError(exc.code, "GET", path, _safe_api_detail(raw)) from exc
-            location = exc.headers.get("Location")
-        except urllib.error.URLError as exc:
-            raise ControllerError(f"could not reach GitHub artifact endpoint: {exc.reason}") from exc
-        else:
-            with response:
-                return _read_limited(response, MAX_ARTIFACT_BYTES)
+            except urllib.error.URLError as exc:
+                if attempt < 2:
+                    time.sleep(1 + attempt)
+                    continue
+                raise ControllerError(
+                    f"could not reach GitHub artifact endpoint: {exc.reason}"
+                ) from exc
+            else:
+                with response:
+                    return _read_limited(response, MAX_ARTIFACT_BYTES)
 
         if not isinstance(location, str):
             raise ControllerError("GitHub artifact redirect did not include a location")
@@ -477,16 +501,24 @@ class GitHubClient:
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
             raise ControllerError("GitHub returned an unsafe artifact redirect")
         # The signed redirect is intentionally fetched without the GitHub token.
-        redirected = urllib.request.Request(
-            location, method="GET", headers={"User-Agent": USER_AGENT}
-        )
-        try:
-            with urllib.request.urlopen(redirected, timeout=60) as response:
-                return _read_limited(response, MAX_ARTIFACT_BYTES)
-        except urllib.error.HTTPError as exc:
-            raise ControllerError(f"artifact download failed with HTTP {exc.code}") from exc
-        except urllib.error.URLError as exc:
-            raise ControllerError(f"artifact download failed: {exc.reason}") from exc
+        for attempt in range(3):
+            redirected = urllib.request.Request(
+                location, method="GET", headers={"User-Agent": USER_AGENT}
+            )
+            try:
+                with urllib.request.urlopen(redirected, timeout=60) as response:
+                    return _read_limited(response, MAX_ARTIFACT_BYTES)
+            except urllib.error.HTTPError as exc:
+                if exc.code in (500, 502, 503, 504) and attempt < 2:
+                    time.sleep(1 + attempt)
+                    continue
+                raise ControllerError(f"artifact download failed with HTTP {exc.code}") from exc
+            except urllib.error.URLError as exc:
+                if attempt < 2:
+                    time.sleep(1 + attempt)
+                    continue
+                raise ControllerError(f"artifact download failed: {exc.reason}") from exc
+        raise ControllerError("artifact download exhausted its verified connection attempts")
 
 
 class StateStore:
