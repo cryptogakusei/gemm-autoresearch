@@ -3,7 +3,7 @@ Description=One isolated autonomous GEMM research iteration
 After=network-online.target gemm-autoresearch-controller.service
 Wants=network-online.target
 Requires=gemm-autoresearch-controller.service
-ConditionPathIsExecutable=/var/lib/gemm-agent/.local/bin/codex
+ConditionPathExists=/var/lib/gemm-agent/.local/bin/codex
 ConditionPathExists=/var/lib/gemm-agent/.codex/config.toml
 
 [Service]
