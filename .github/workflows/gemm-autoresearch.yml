@@ -1,12 +1,9 @@
 name: Trusted GEMM autoresearch
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - candidate/**
-      - .github/workflows/gemm-autoresearch.yml
-      - .github/CODEOWNERS
+  # Pull-request execution is restored after the trusted workflow and
+  # candidate runtime are isolated. Until then, do not execute public PR code
+  # on the persistent DGX runner.
   workflow_dispatch:
 
 permissions:
