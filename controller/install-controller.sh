@@ -74,7 +74,8 @@ done
     "$SCRIPT_DIR/gemm-autoresearch-controller.service" "$SERVICE_FILE"
 
 /usr/bin/systemctl daemon-reload
-/usr/bin/systemctl enable --now gemm-autoresearch-controller.service
+/usr/bin/systemctl enable gemm-autoresearch-controller.service
+/usr/bin/systemctl restart gemm-autoresearch-controller.service
 /usr/bin/systemctl --no-pager --full status gemm-autoresearch-controller.service
 
 echo
