@@ -1,9 +1,9 @@
 #include "candidate_api.h"
 
 namespace {
-constexpr int BM=128, BN=64, BK=32, TX=32, TY=8, TM=16, TN=2;
+constexpr int BM=128, BN=64, BK=32, TX=16, TY=16, TM=8, TN=4;
 
-template <bool UnitAlphaZeroBeta>
+template <bool UnitAlphaZeroBeta, bool FullTiles>
 __global__ void candidate_kernel(const float *__restrict__ A,
                                  const float *__restrict__ B,
                                  float *__restrict__ C, float alpha, float beta,
@@ -17,9 +17,13 @@ __global__ void candidate_kernel(const float *__restrict__ A,
     for (int k0=0; k0<K; k0+=BK) {
         for (int x=tid; x<BM*(BK/4); x+=TX*TY) {
             const int r=x/(BK/4), q=x%(BK/4), gr=br+r;
-            const float4 v=(gr<M && k0+4*q+3<K)
-                ? *reinterpret_cast<const float4*>(A+gr*K+k0+4*q)
-                : make_float4(0.0f,0.0f,0.0f,0.0f);
+            float4 v;
+            if constexpr (FullTiles)
+                v=*reinterpret_cast<const float4*>(A+gr*K+k0+4*q);
+            else
+                v=(gr<M && k0+4*q+3<K)
+                    ? *reinterpret_cast<const float4*>(A+gr*K+k0+4*q)
+                    : make_float4(0.0f,0.0f,0.0f,0.0f);
             As[r][4*q+0]=v.x;
             As[r][4*q+1]=v.y;
             As[r][4*q+2]=v.z;
@@ -27,9 +31,13 @@ __global__ void candidate_kernel(const float *__restrict__ A,
         }
         for (int x=tid; x<BK*(BN/4); x+=TX*TY) {
             const int k=x/(BN/4), q=x%(BN/4), gc=bc+4*q;
-            const float4 v=(k0+k<K && gc+3<N)
-                ? *reinterpret_cast<const float4*>(B+(k0+k)*N+gc)
-                : make_float4(0.0f,0.0f,0.0f,0.0f);
+            float4 v;
+            if constexpr (FullTiles)
+                v=*reinterpret_cast<const float4*>(B+(k0+k)*N+gc);
+            else
+                v=(k0+k<K && gc+3<N)
+                    ? *reinterpret_cast<const float4*>(B+(k0+k)*N+gc)
+                    : make_float4(0.0f,0.0f,0.0f,0.0f);
             *reinterpret_cast<float4*>(&Bs[k][4*q])=v;
         }
         __syncthreads();
@@ -48,12 +56,12 @@ __global__ void candidate_kernel(const float *__restrict__ A,
         __syncthreads();
     }
     if constexpr (UnitAlphaZeroBeta) {
-        if (br+BM<=M && bc+BN<=N) {
+        if constexpr (FullTiles) {
 #pragma unroll
             for (int i=0;i<TM;++i) {
                 const int x=(br+tr+i)*N+bc+tc;
-                *reinterpret_cast<float2*>(C+x)=
-                    make_float2(acc[i][0],acc[i][1]);
+                *reinterpret_cast<float4*>(C+x)=
+                    make_float4(acc[i][0],acc[i][1],acc[i][2],acc[i][3]);
             }
         } else {
 #pragma unroll
@@ -88,9 +96,17 @@ extern "C" cudaError_t launch_candidate_gemm(
     int M, int N, int K, cudaStream_t stream) {
     if (M<=0 || N<=0 || K<=0) return cudaErrorInvalidValue;
     const dim3 grid((N+BN-1)/BN,(M+BM-1)/BM), block(TX,TY);
-    if (alpha==1.0f && beta==0.0f)
-        candidate_kernel<true><<<grid,block,0,stream>>>(A,B,C,alpha,beta,M,N,K);
-    else
-        candidate_kernel<false><<<grid,block,0,stream>>>(A,B,C,alpha,beta,M,N,K);
+    const bool full=(M%BM==0 && N%BN==0 && K%BK==0);
+    if (alpha==1.0f && beta==0.0f) {
+        if (full)
+            candidate_kernel<true,true><<<grid,block,0,stream>>>(A,B,C,alpha,beta,M,N,K);
+        else
+            candidate_kernel<true,false><<<grid,block,0,stream>>>(A,B,C,alpha,beta,M,N,K);
+    } else {
+        if (full)
+            candidate_kernel<false,true><<<grid,block,0,stream>>>(A,B,C,alpha,beta,M,N,K);
+        else
+            candidate_kernel<false,false><<<grid,block,0,stream>>>(A,B,C,alpha,beta,M,N,K);
+    }
     return cudaGetLastError();
 }
