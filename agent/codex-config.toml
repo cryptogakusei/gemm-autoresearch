@@ -23,6 +23,7 @@ description = "Read the trusted GEMM repository and edit only the candidate sour
 ":tmpdir" = "deny"
 ":slash_tmp" = "deny"
 "/run/gemm-autoresearch" = "read"
+"/var/lib/gemm-agent/.codex/packages/standalone/releases" = "read"
 
 [permissions.gemm-autoresearch.filesystem.":workspace_roots"]
 "." = "read"

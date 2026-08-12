@@ -39,7 +39,9 @@ ProtectProc=invisible
 ProtectSystem=strict
 ProcSubset=pid
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictNamespaces=true
+# Codex's bubblewrap sandbox needs these namespace types. Keep cgroup
+# namespaces prohibited by omitting them from the allowlist.
+RestrictNamespaces=user mnt pid ipc uts net
 RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true

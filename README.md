@@ -108,4 +108,13 @@ cannot access GitHub credentials or execute candidate code on the host GPU.
 Its root-owned Codex permission profile also denies model-generated commands
 read access outside the minimal runtime and trusted workspace, including the
 Codex authentication cache, and denies every network destination except the
-controller's exact Unix socket.
+controller's exact Unix socket. The only additional read grant is the Codex
+standalone release directory, which bubblewrap needs to re-execute the sandbox
+launcher; the rest of `.codex`, including `auth.json`, remains denied.
+
+On Ubuntu 24.04 with
+`kernel.apparmor_restrict_unprivileged_userns=1`, install the Ubuntu
+`apparmor-profiles` package and enable its disabled-by-default
+`bwrap-userns-restrict` profile before starting the agent. This allows bwrap to
+set up the sandbox namespace while stripping capabilities from the command it
+launches. Do not disable the host-wide user-namespace restriction.
