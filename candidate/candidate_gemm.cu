@@ -8,7 +8,7 @@ __global__ void candidate_kernel(const float *__restrict__ A,
                                  const float *__restrict__ B,
                                  float *__restrict__ C, float alpha, float beta,
                                  int M, int N, int K) {
-    __shared__ float As[BM][BK];
+    __shared__ float As[BM][BK+1];
     __shared__ float Bs[BK][BN];
     const int tid=threadIdx.y*TX+threadIdx.x;
     const int br=blockIdx.y*BM, bc=blockIdx.x*BN;
@@ -20,7 +20,10 @@ __global__ void candidate_kernel(const float *__restrict__ A,
             const float4 v=(gr<M && k0+4*q+3<K)
                 ? *reinterpret_cast<const float4*>(A+gr*K+k0+4*q)
                 : make_float4(0.0f,0.0f,0.0f,0.0f);
-            *reinterpret_cast<float4*>(&As[r][4*q])=v;
+            As[r][4*q+0]=v.x;
+            As[r][4*q+1]=v.y;
+            As[r][4*q+2]=v.z;
+            As[r][4*q+3]=v.w;
         }
         for (int x=tid; x<BK*(BN/4); x+=TX*TY) {
             const int k=x/(BN/4), q=x%(BN/4), gc=bc+4*q;
