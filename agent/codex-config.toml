@@ -30,7 +30,9 @@ description = "Read the trusted GEMM repository and edit only the candidate sour
 "candidate" = "write"
 
 [permissions.gemm-autoresearch.network]
-enabled = false
+# Enable the sandbox proxy so the Unix-socket allowlist is active. With no
+# domain allow entries below, all TCP/HTTP destinations remain blocked.
+enabled = true
 
 [permissions.gemm-autoresearch.network.unix_sockets]
 "/run/gemm-autoresearch/controller.sock" = "allow"
