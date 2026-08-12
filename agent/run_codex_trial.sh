@@ -55,6 +55,7 @@ export PATH="$AGENT_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$RUNS_DIR/$STAMP-$$"
 mkdir -m 700 -- "$RUN_DIR"
+/usr/local/bin/gemmctl status >"$RUN_DIR/controller-status-before.json"
 
 set +e
 "$CODEX_BIN" --strict-config --ask-for-approval never exec \
@@ -68,6 +69,46 @@ CODEX_STATUS=$?
 set -e
 
 /usr/local/bin/gemmctl status >"$RUN_DIR/controller-status.json" 2>&1 || true
+printf '%s\n' "$CODEX_STATUS" >"$RUN_DIR/exit-code.txt"
+
+if ! /usr/bin/python3 - \
+    "$RUN_DIR/controller-status-before.json" \
+    "$RUN_DIR/controller-status.json" <<'PY'
+import json
+import sys
+
+
+def result_signature(path):
+    with open(path, encoding="utf-8") as stream:
+        payload = json.load(stream)
+    active = payload.get("result", {}).get("active_run")
+    if not isinstance(active, dict):
+        return None
+    last_result = active.get("last_result")
+    if not isinstance(last_result, dict):
+        return None
+    candidate_sha = last_result.get("candidate_sha")
+    completed_at = last_result.get("completed_at")
+    if not isinstance(candidate_sha, str) or not isinstance(completed_at, int):
+        return None
+    return (
+        active.get("id"),
+        last_result.get("iteration"),
+        candidate_sha,
+        completed_at,
+    )
+
+
+before = result_signature(sys.argv[1])
+after = result_signature(sys.argv[2])
+if after is None or after == before:
+    raise SystemExit(1)
+PY
+then
+    echo "Codex exited without a new trusted controller result" >&2
+    CODEX_STATUS=1
+fi
+
 printf '%s\n' "$CODEX_STATUS" >"$RUN_DIR/exit-code.txt"
 printf 'Codex trial log: %s\n' "$RUN_DIR"
 exit "$CODEX_STATUS"

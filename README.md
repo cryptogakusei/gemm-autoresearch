@@ -115,6 +115,12 @@ wrapper accepts the installer's launcher symlink only when its canonical target
 is a regular executable under that release directory, and systemd mounts the
 release subtree read-only during a run.
 
+The service disables Codex's V8-backed code-mode host so systemd can retain
+`MemoryDenyWriteExecute=true`; commands use the regular unified shell backend
+instead. After Codex exits, the root-installed wrapper also compares trusted
+controller state from before and after the run. The unit fails unless a new,
+completed experiment result was recorded, even if Codex itself exits zero.
+
 On Ubuntu 24.04 with
 `kernel.apparmor_restrict_unprivileged_userns=1`, install the Ubuntu
 `apparmor-profiles` package and enable its disabled-by-default
