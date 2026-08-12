@@ -1,0 +1,46 @@
+[Unit]
+Description=Run %i bounded sequential GEMM autoresearch iterations
+After=network-online.target gemm-autoresearch-controller.service
+Wants=network-online.target
+Requires=gemm-autoresearch-controller.service
+ConditionPathExists=/usr/local/libexec/gemm-autoresearch/run_autoresearch_batch.py
+ConditionPathExists=/etc/systemd/system/gemm-autoresearch-agent.service
+ConditionPathExists=/run/lock/gemm-autoresearch/batch.lock
+
+[Service]
+Type=oneshot
+User=root
+Group=gemm-submit
+ExecStart=/usr/bin/python3 /usr/local/libexec/gemm-autoresearch/run_autoresearch_batch.py %i
+TimeoutStartSec=infinity
+TimeoutStopSec=15s
+UMask=0077
+TasksMax=32
+MemoryMax=256M
+LimitNOFILE=128
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+InaccessiblePaths=/etc/gemm-autoresearch
+InaccessiblePaths=/var/lib/gemm-agent
+ReadWritePaths=/run/lock/gemm-autoresearch/batch.lock

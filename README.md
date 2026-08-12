@@ -133,6 +133,20 @@ when no result has been accepted yet. Incorrect or slower experiments remain
 auditable in the PR history but do not become the baseline for the following
 iteration.
 
+For bounded continuous research, the root-owned
+`gemm-autoresearch-batch@.service` sequentially starts the same isolated
+one-iteration service and fails closed on the first missing or failed trusted
+result. The instance name specifies the number of additional iterations:
+
+```bash
+sudo systemctl start --no-block gemm-autoresearch-batch@10.service
+```
+
+Counts are limited to 1–50 and may not exceed the controller's remaining
+per-run submission budget. A global lock prevents overlapping batches. See
+[`docs/CONTINUOUS_AUTORESEARCH.md`](docs/CONTINUOUS_AUTORESEARCH.md) for
+monitoring, stop-after-current, failure recovery, and isolation details.
+
 On Ubuntu 24.04 with
 `kernel.apparmor_restrict_unprivileged_userns=1`, install the Ubuntu
 `apparmor-profiles` package and enable its disabled-by-default

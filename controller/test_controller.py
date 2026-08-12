@@ -385,6 +385,20 @@ class ArtifactTests(unittest.TestCase):
 
 
 class ControllerFlowTests(unittest.TestCase):
+    def test_status_reports_remaining_submission_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            github = FakeGitHub()
+            store = controller.StateStore(Path(directory) / "state.json")
+            instance = controller.Controller(github, store, 3)
+            initial = instance.status()
+            self.assertEqual(initial["max_iterations_per_run"], 3)
+            self.assertEqual(initial["remaining_iterations"], 3)
+
+            instance.submit(b"// candidate\n", "first optimization", 60)
+            current = instance.status()
+            self.assertEqual(current["active_run"]["iteration"], 1)
+            self.assertEqual(current["remaining_iterations"], 2)
+
     def test_restore_best_returns_best_source_after_a_regression(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             github = FakeGitHub()

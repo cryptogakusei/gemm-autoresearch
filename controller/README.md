@@ -64,3 +64,8 @@ SHA already recorded as `new best`; the client atomically writes only the fixed
 local candidate path. If the active run has no accepted result yet, the
 controller restores the candidate from the exact current `main` SHA. Therefore
 an incorrect first experiment cannot become the next experiment's baseline.
+
+The controller's `status` response includes `max_iterations_per_run` and
+`remaining_iterations`. The trusted batch scheduler uses those values to reject
+an oversized request before starting any child agent service. See
+`../docs/CONTINUOUS_AUTORESEARCH.md` for the operator interface.

@@ -934,15 +934,26 @@ class Controller:
         state_value = self.state_store.load()
         active = state_value.get("active_run")
         if active is None:
-            return {"active_run": None}
+            return {
+                "active_run": None,
+                "max_iterations_per_run": self.max_iterations,
+                "remaining_iterations": self.max_iterations,
+            }
+        iteration = active.get("iteration", 0)
+        if isinstance(iteration, bool) or not isinstance(iteration, int) or iteration < 0:
+            raise ControllerError("active research iteration is invalid")
+        if iteration > self.max_iterations:
+            raise ControllerError("active research iteration exceeds its configured maximum")
         return {
+            "max_iterations_per_run": self.max_iterations,
+            "remaining_iterations": max(0, self.max_iterations - iteration),
             "active_run": {
                 "id": active.get("id"),
                 "title": active.get("title"),
                 "branch": active.get("branch"),
                 "pr_number": active.get("pr_number"),
                 "pr_url": active.get("pr_url"),
-                "iteration": active.get("iteration", 0),
+                "iteration": iteration,
                 "pending_candidate_sha": active.get("pending", {}).get("candidate_sha")
                 if isinstance(active.get("pending"), dict)
                 else None,

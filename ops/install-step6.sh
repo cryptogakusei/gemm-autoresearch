@@ -20,9 +20,11 @@ readonly SHARE_DIR=/usr/local/share/gemm-autoresearch
 for required in \
     "$SOURCE_ROOT/controller/install-controller.sh" \
     "$SOURCE_ROOT/agent/run_codex_trial.sh" \
+    "$SOURCE_ROOT/ops/run_autoresearch_batch.py" \
     "$SOURCE_ROOT/agent/codex-config.toml" \
     "$SOURCE_ROOT/agent/ONE_ITERATION_PROMPT.md" \
     "$SOURCE_ROOT/agent/gemm-autoresearch-agent.service" \
+    "$SOURCE_ROOT/agent/gemm-autoresearch-batch@.service" \
     "$SOURCE_ROOT/ops/gemm-autoresearch-tmpfiles.conf"; do
     if [[ ! -f "$required" || -L "$required" ]]; then
         echo "missing or unsafe Step 6 input: $required" >&2
@@ -69,6 +71,9 @@ fi
 /usr/bin/install -o root -g root -m 0755 \
     "$SOURCE_ROOT/agent/run_codex_trial.sh" \
     "$LIBEXEC_DIR/run_codex_trial.sh"
+/usr/bin/install -o root -g root -m 0755 \
+    "$SOURCE_ROOT/ops/run_autoresearch_batch.py" \
+    "$LIBEXEC_DIR/run_autoresearch_batch.py"
 /usr/bin/install -o root -g root -m 0644 \
     "$SOURCE_ROOT/agent/codex-config.toml" \
     "$AGENT_HOME/.codex/config.toml"
@@ -78,6 +83,9 @@ fi
 /usr/bin/install -o root -g root -m 0644 \
     "$SOURCE_ROOT/agent/gemm-autoresearch-agent.service" \
     /etc/systemd/system/gemm-autoresearch-agent.service
+/usr/bin/install -o root -g root -m 0644 \
+    "$SOURCE_ROOT/agent/gemm-autoresearch-batch@.service" \
+    /etc/systemd/system/gemm-autoresearch-batch@.service
 
 /usr/bin/systemctl daemon-reload
 /usr/bin/systemctl restart "$RUNNER_SERVICE"
@@ -90,6 +98,10 @@ if [[ "$(stat -c '%U:%G:%a' /run/lock/gemm-autoresearch/gpu.lock)" != "root:gemm
     echo "GPU lock file has unexpected ownership or mode" >&2
     exit 1
 fi
+if [[ "$(stat -c '%U:%G:%a' /run/lock/gemm-autoresearch/batch.lock)" != "root:root:600" ]]; then
+    echo "batch lock file has unexpected ownership or mode" >&2
+    exit 1
+fi
 if [[ "$(stat -c '%U:%G:%a' "$AGENT_HOME/.codex/config.toml")" != "root:root:644" ]]; then
     echo "Codex policy has unexpected ownership or mode" >&2
     exit 1
@@ -100,4 +112,7 @@ if ! /usr/bin/systemctl is-active --quiet "$RUNNER_SERVICE"; then
 fi
 
 echo "Step 6 host isolation installed."
-echo "Next: install and authenticate Codex as gemm-agent; do not start the agent service yet."
+echo "Run one iteration with:"
+echo "  systemctl start --no-block gemm-autoresearch-agent.service"
+echo "Run a bounded batch with:"
+echo "  systemctl start --no-block gemm-autoresearch-batch@10.service"
