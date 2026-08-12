@@ -3,6 +3,7 @@
 namespace {
 constexpr int BM=128, BN=64, BK=16, TX=16, TY=16, TM=8, TN=4;
 
+template <bool UnitAlphaZeroBeta>
 __global__ void candidate_kernel(const float *__restrict__ A,
                                  const float *__restrict__ B,
                                  float *__restrict__ C, float alpha, float beta,
@@ -51,7 +52,10 @@ __global__ void candidate_kernel(const float *__restrict__ A,
             const int c=bc+tc+j;
             if (r<M && c<N) {
                 const int x=r*N+c;
-                C[x]=alpha*acc[i][j]+beta*C[x];
+                if constexpr (UnitAlphaZeroBeta)
+                    C[x]=acc[i][j];
+                else
+                    C[x]=alpha*acc[i][j]+beta*C[x];
             }
         }
     }
@@ -62,7 +66,10 @@ extern "C" cudaError_t launch_candidate_gemm(
     const float *A, const float *B, float *C, float alpha, float beta,
     int M, int N, int K, cudaStream_t stream) {
     if (M<=0 || N<=0 || K<=0) return cudaErrorInvalidValue;
-    candidate_kernel<<<dim3((N+BN-1)/BN,(M+BM-1)/BM),dim3(TX,TY),0,stream>>>(
-        A,B,C,alpha,beta,M,N,K);
+    const dim3 grid((N+BN-1)/BN,(M+BM-1)/BM), block(TX,TY);
+    if (alpha==1.0f && beta==0.0f)
+        candidate_kernel<true><<<grid,block,0,stream>>>(A,B,C,alpha,beta,M,N,K);
+    else
+        candidate_kernel<false><<<grid,block,0,stream>>>(A,B,C,alpha,beta,M,N,K);
     return cudaGetLastError();
 }
