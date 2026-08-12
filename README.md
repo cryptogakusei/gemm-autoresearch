@@ -132,3 +132,7 @@ On Ubuntu 24.04 with
 `bwrap-userns-restrict` profile before starting the agent. This allows bwrap to
 set up the sandbox namespace while stripping capabilities from the command it
 launches. Do not disable the host-wide user-namespace restriction.
+
+For the complete systemd/Codex failure timeline, explanations of each fix,
+retained security boundaries, and future diagnostic commands, see
+[`docs/STEP6_SYSTEMD_TROUBLESHOOTING.md`](docs/STEP6_SYSTEMD_TROUBLESHOOTING.md).
