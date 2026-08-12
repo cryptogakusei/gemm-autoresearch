@@ -52,3 +52,4 @@ ReadWritePaths=/var/lib/gemm-agent/.codex
 ReadWritePaths=/var/lib/gemm-agent/runs
 ReadWritePaths=/var/lib/gemm-agent/workspace/gemm-autoresearch/candidate
 ReadOnlyPaths=/var/lib/gemm-agent/.codex/config.toml
+ReadOnlyPaths=/var/lib/gemm-agent/.codex/packages/standalone/releases

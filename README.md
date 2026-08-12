@@ -110,7 +110,10 @@ read access outside the minimal runtime and trusted workspace, including the
 Codex authentication cache, and denies every network destination except the
 controller's exact Unix socket. The only additional read grant is the Codex
 standalone release directory, which bubblewrap needs to re-execute the sandbox
-launcher; the rest of `.codex`, including `auth.json`, remains denied.
+launcher; the rest of `.codex`, including `auth.json`, remains denied. The host
+wrapper accepts the installer's launcher symlink only when its canonical target
+is a regular executable under that release directory, and systemd mounts the
+release subtree read-only during a run.
 
 On Ubuntu 24.04 with
 `kernel.apparmor_restrict_unprivileged_userns=1`, install the Ubuntu
