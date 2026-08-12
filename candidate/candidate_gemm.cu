@@ -1,7 +1,7 @@
 #include "candidate_api.h"
 
 namespace {
-constexpr int BM=64, BN=128, BK=16, TX=16, TY=16, TM=4, TN=8;
+constexpr int BM=128, BN=64, BK=16, TX=16, TY=16, TM=8, TN=4;
 
 template <bool UnitAlphaZeroBeta>
 __global__ void candidate_kernel(const float *__restrict__ A,
@@ -44,18 +44,36 @@ __global__ void candidate_kernel(const float *__restrict__ A,
         }
         __syncthreads();
     }
+    if constexpr (UnitAlphaZeroBeta) {
+        if (br+BM<=M && bc+BN<=N) {
 #pragma unroll
-    for (int i=0;i<TM;++i) {
-        const int r=br+tr+i;
+            for (int i=0;i<TM;++i) {
+                const int x=(br+tr+i)*N+bc+tc;
+                *reinterpret_cast<float4*>(C+x)=
+                    make_float4(acc[i][0],acc[i][1],acc[i][2],acc[i][3]);
+            }
+        } else {
 #pragma unroll
-        for (int j=0;j<TN;++j) {
-            const int c=bc+tc+j;
-            if (r<M && c<N) {
-                const int x=r*N+c;
-                if constexpr (UnitAlphaZeroBeta)
-                    C[x]=acc[i][j];
-                else
+            for (int i=0;i<TM;++i) {
+                const int r=br+tr+i;
+#pragma unroll
+                for (int j=0;j<TN;++j) {
+                    const int c=bc+tc+j;
+                    if (r<M && c<N) C[r*N+c]=acc[i][j];
+                }
+            }
+        }
+    } else {
+#pragma unroll
+        for (int i=0;i<TM;++i) {
+            const int r=br+tr+i;
+#pragma unroll
+            for (int j=0;j<TN;++j) {
+                const int c=bc+tc+j;
+                if (r<M && c<N) {
+                    const int x=r*N+c;
                     C[x]=alpha*acc[i][j]+beta*C[x];
+                }
             }
         }
     }
