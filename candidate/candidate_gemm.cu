@@ -1,7 +1,7 @@
 #include "candidate_api.h"
 
 namespace {
-constexpr int BM=128, BN=128, BK=16, TX=16, TY=16, TM=8, TN=8;
+constexpr int BM=128, BN=64, BK=32, TX=16, TY=16, TM=8, TN=4;
 
 template <bool UnitAlphaZeroBeta>
 __global__ void candidate_kernel(const float *__restrict__ A,
@@ -17,14 +17,14 @@ __global__ void candidate_kernel(const float *__restrict__ A,
     for (int k0=0; k0<K; k0+=BK) {
         for (int x=tid; x<BM*(BK/4); x+=TX*TY) {
             const int r=x/(BK/4), q=x%(BK/4), gr=br+r;
-            const float4 v=(gr<M)
+            const float4 v=(gr<M && k0+4*q+3<K)
                 ? *reinterpret_cast<const float4*>(A+gr*K+k0+4*q)
                 : make_float4(0.0f,0.0f,0.0f,0.0f);
             *reinterpret_cast<float4*>(&As[r][4*q])=v;
         }
         for (int x=tid; x<BK*(BN/4); x+=TX*TY) {
             const int k=x/(BN/4), q=x%(BN/4), gc=bc+4*q;
-            const float4 v=(gc+3<N)
+            const float4 v=(k0+k<K && gc+3<N)
                 ? *reinterpret_cast<const float4*>(B+(k0+k)*N+gc)
                 : make_float4(0.0f,0.0f,0.0f,0.0f);
             *reinterpret_cast<float4*>(&Bs[k][4*q])=v;
@@ -51,8 +51,6 @@ __global__ void candidate_kernel(const float *__restrict__ A,
                 const int x=(br+tr+i)*N+bc+tc;
                 *reinterpret_cast<float4*>(C+x)=
                     make_float4(acc[i][0],acc[i][1],acc[i][2],acc[i][3]);
-                *reinterpret_cast<float4*>(C+x+4)=
-                    make_float4(acc[i][4],acc[i][5],acc[i][6],acc[i][7]);
             }
         } else {
 #pragma unroll
