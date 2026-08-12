@@ -4,9 +4,11 @@ The controller is the only component allowed to hold the repository-scoped
 GitHub App private key. An untrusted research process runs as `gemm-agent` and
 can communicate through `/run/gemm-autoresearch/controller.sock` only.
 
-The socket protocol deliberately offers four operations:
+The socket protocol deliberately offers five operations:
 
 - `gemmctl start --title TITLE` starts local state for one research PR;
+- `gemmctl restore-best` atomically restores the local candidate from the exact
+  commit SHA of the best correctness-passing result recorded by the controller;
 - `gemmctl submit FILE --hypothesis TEXT` submits the bytes of `FILE` at the
   hard-coded `candidate/candidate_gemm.cu` path and waits for the DGX result;
 - `gemmctl resume` resumes result collection for the exact already-submitted
@@ -51,3 +53,14 @@ best. A correctness failure never receives or replaces a score.
 
 The controller never merges. Close or merge the current PR as a human before
 starting another run.
+
+## Continuous iterations
+
+The trusted Step 6 launcher runs `gemmctl restore-best` before every Codex
+session. If the preceding attempt was incorrect or slower, its commit remains
+in PR history but its source is not used as the next optimization baseline.
+The controller fetches only `candidate/candidate_gemm.cu` at the exact candidate
+SHA already recorded as `new best`; the client atomically writes only the fixed
+local candidate path. If the active run has no accepted result yet, the
+controller restores the candidate from the exact current `main` SHA. Therefore
+an incorrect first experiment cannot become the next experiment's baseline.

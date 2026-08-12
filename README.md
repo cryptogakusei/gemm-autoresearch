@@ -126,6 +126,13 @@ After Codex exits, the root-installed wrapper also compares trusted controller
 state from before and after the run. The unit fails unless a new, completed
 experiment result was recorded, even if Codex itself exits zero.
 
+Before each Codex session, the wrapper atomically restores
+`candidate/candidate_gemm.cu` from the exact commit recorded as the active
+run's best accepted result, falling back to the exact protected `main` commit
+when no result has been accepted yet. Incorrect or slower experiments remain
+auditable in the PR history but do not become the baseline for the following
+iteration.
+
 On Ubuntu 24.04 with
 `kernel.apparmor_restrict_unprivileged_userns=1`, install the Ubuntu
 `apparmor-profiles` package and enable its disabled-by-default

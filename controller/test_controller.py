@@ -12,6 +12,7 @@ import urllib.error
 import zipfile
 
 from controller import gemm_controller as controller
+from controller import gemmctl as client
 
 
 def artifact_bytes(
@@ -78,13 +79,19 @@ class FakeGitHub:
 
     def __init__(self) -> None:
         self.counter = 1
+        self.main_sha = "1" * 40
         self.head_sha: str | None = None
         self.branch: str | None = None
         self.pr_body = ""
         self.pr_state = "open"
+        self.score = 0.25
+        self.correctness_status = "PASS"
+        self.candidates: dict[str, bytes] = {
+            self.main_sha: b"// protected main baseline\n"
+        }
 
     def main_ref(self) -> str:
-        return "1" * 40
+        return self.main_sha
 
     def ref(self, branch: str) -> str:
         if branch != self.branch or self.head_sha is None:
@@ -96,7 +103,14 @@ class FakeGitHub:
         self.pending_sha = f"{self.counter:040x}"
         self.last_candidate = candidate
         self.last_message = message
+        self.candidates[self.pending_sha] = candidate
         return self.pending_sha
+
+    def candidate_at_commit(self, commit_sha: str) -> bytes:
+        try:
+            return self.candidates[commit_sha]
+        except KeyError as exc:
+            raise AssertionError("unexpected candidate commit lookup") from exc
 
     def create_branch(self, branch: str, commit_sha: str) -> None:
         self.branch = branch
@@ -143,7 +157,11 @@ class FakeGitHub:
 
     def download_artifact(self, artifact_id: int) -> bytes:
         assert self.head_sha is not None
-        return artifact_bytes(self.head_sha)
+        return artifact_bytes(
+            self.head_sha,
+            score=self.score,
+            correctness_status=self.correctness_status,
+        )
 
 
 class FailingOnceGitHub(FakeGitHub):
@@ -177,6 +195,14 @@ class ValidationTests(unittest.TestCase):
                 instance.dispatch(
                     {"version": 1, "operation": "status", "arbitrary_api_path": "/user"}
                 )
+            with self.assertRaises(controller.ControllerError):
+                instance.dispatch(
+                    {
+                        "version": 1,
+                        "operation": "restore-best",
+                        "candidate_sha": "a" * 40,
+                    }
+                )
 
     def test_state_file_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -187,8 +213,57 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(store.load(), value)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
+    def test_client_decodes_and_writes_restored_candidate_atomically(self) -> None:
+        candidate = b"// trusted best\n"
+        result = {
+            "available": True,
+            "source": "best",
+            "iteration": 1,
+            "candidate_sha": "a" * 40,
+            "candidate_bytes": len(candidate),
+            "candidate_base64": controller.base64.b64encode(candidate).decode("ascii"),
+        }
+        restored, public = client._restored_candidate(result)
+        self.assertEqual(restored, candidate)
+        self.assertNotIn("candidate_base64", public)
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory).resolve() / "candidate_gemm.cu"
+            destination.write_text("// latest regression\n", encoding="utf-8")
+            client._write_candidate(destination, candidate)
+            self.assertEqual(destination.read_bytes(), candidate)
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o644)
+
+    def test_client_refuses_symlink_candidate_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            target = parent / "target.cu"
+            target.write_text("// target\n", encoding="utf-8")
+            destination = parent / "candidate_gemm.cu"
+            destination.symlink_to(target)
+            with self.assertRaisesRegex(client.ClientError, "regular, non-symlink"):
+                client._write_candidate(destination, b"// trusted best\n")
+
 
 class ConnectionRetryTests(unittest.TestCase):
+    def test_candidate_fetch_is_fixed_to_exact_path_and_commit(self) -> None:
+        authentication = mock.Mock()
+        github = controller.GitHubClient(
+            "cryptogakusei/gemm-autoresearch", authentication
+        )
+        candidate = b"// accepted source\n"
+        response = {
+            "type": "file",
+            "path": controller.CANDIDATE_PATH,
+            "encoding": "base64",
+            "size": len(candidate),
+            "content": controller.base64.b64encode(candidate).decode("ascii"),
+        }
+        with mock.patch.object(github, "api", return_value=response) as api:
+            self.assertEqual(github.candidate_at_commit("a" * 40), candidate)
+        requested = api.call_args.args[1]
+        self.assertIn("/contents/candidate/candidate_gemm.cu?", requested)
+        self.assertIn("ref=" + "a" * 40, requested)
+
     def test_safe_get_retries_a_fresh_verified_connection(self) -> None:
         authentication = mock.Mock()
         authentication.token.return_value = "temporary-token"
@@ -310,6 +385,62 @@ class ArtifactTests(unittest.TestCase):
 
 
 class ControllerFlowTests(unittest.TestCase):
+    def test_restore_best_returns_best_source_after_a_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            github = FakeGitHub()
+            store = controller.StateStore(Path(directory) / "state.json")
+            instance = controller.Controller(github, store, 3)
+
+            github.score = 0.5
+            first = instance.submit(b"// accepted best\n", "first optimization", 60)
+            self.assertEqual(first["decision"], "new best")
+            best_sha = first["candidate_sha"]
+
+            github.score = 0.2
+            second = instance.submit(b"// slower attempt\n", "risky optimization", 60)
+            self.assertEqual(second["decision"], "not improved")
+            self.assertNotEqual(second["candidate_sha"], best_sha)
+
+            restored = instance.dispatch({"version": 1, "operation": "restore-best"})
+            self.assertTrue(restored["available"])
+            self.assertEqual(restored["source"], "best")
+            self.assertEqual(restored["candidate_sha"], best_sha)
+            self.assertEqual(
+                controller.base64.b64decode(restored["candidate_base64"]),
+                b"// accepted best\n",
+            )
+
+    def test_restore_best_uses_main_before_an_accepted_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            github = FakeGitHub()
+            instance = controller.Controller(
+                github, controller.StateStore(Path(directory) / "state.json"), 3
+            )
+            restored = instance.dispatch({"version": 1, "operation": "restore-best"})
+            self.assertTrue(restored["available"])
+            self.assertEqual(restored["source"], "main")
+            self.assertEqual(restored["candidate_sha"], github.main_sha)
+            self.assertEqual(
+                controller.base64.b64decode(restored["candidate_base64"]),
+                b"// protected main baseline\n",
+            )
+
+    def test_restore_best_uses_main_after_rejected_first_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            github = FakeGitHub()
+            store = controller.StateStore(Path(directory) / "state.json")
+            instance = controller.Controller(github, store, 3)
+            github.correctness_status = "FAIL"
+            result = instance.submit(b"// incorrect attempt\n", "unsafe change", 60)
+            self.assertEqual(result["decision"], "rejected")
+
+            restored = instance.dispatch({"version": 1, "operation": "restore-best"})
+            self.assertEqual(restored["source"], "main")
+            self.assertEqual(
+                controller.base64.b64decode(restored["candidate_base64"]),
+                b"// protected main baseline\n",
+            )
+
     def test_submit_creates_only_candidate_pr_and_tracks_best(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             github = FakeGitHub()

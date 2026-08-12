@@ -2,6 +2,10 @@ Perform exactly one autonomous GEMM optimization experiment.
 
 Read `AGENTS.md`, `README.md`, `AUTORESEARCH_PROMPT.md`, the candidate ABI,
 published case manifests, benchmark implementation, and current candidate.
+The trusted launcher restores the current candidate from the controller's best
+accepted iteration before this session starts, or from protected `main` if no
+accepted iteration exists yet. Treat that restored kernel as the baseline for
+this experiment, not the most recently attempted kernel.
 Run `gemmctl status` to inspect controller history. Attempt
 `gemmctl start --title "Autonomous general-purpose GEMM research"`; if it says
 an existing research PR is still open, continue that existing run.

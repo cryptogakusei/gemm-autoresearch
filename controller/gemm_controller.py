@@ -1,16 +1,18 @@
 #!/usr/bin/python3
 """Trusted broker between an untrusted research agent and GitHub/DGX CI.
 
-The broker deliberately exposes only four operations over a Unix socket:
-start a research run, submit candidate source, resume result collection for an
-already-submitted SHA, and inspect status. GitHub App credentials never cross
-that socket. There is intentionally no merge, close, arbitrary-ref,
-arbitrary-path, or arbitrary-API operation.
+The broker deliberately exposes only five operations over a Unix socket:
+start a research run, restore the exact best accepted candidate, submit
+candidate source, resume result collection for an already-submitted SHA, and
+inspect status. GitHub App credentials never cross that socket. There is
+intentionally no merge, close, arbitrary-ref, arbitrary-path, or arbitrary-API
+operation.
 """
 
 from __future__ import annotations
 
 import base64
+import binascii
 import calendar
 import csv
 import hashlib
@@ -51,7 +53,9 @@ PROTOCOL_VERSION = 1
 # every ASCII control byte.  Keep that valid case bounded without silently
 # lowering the documented source limit.
 MAX_REQUEST_BYTES = 6_400_000
-MAX_RESPONSE_BYTES = 1_000_000
+# A restored one-MiB candidate expands to just under 1.4 MiB in base64. Keep
+# enough room for its bounded metadata without allowing an unbounded response.
+MAX_RESPONSE_BYTES = 1_500_000
 MAX_CANDIDATE_BYTES = 1_048_576
 MAX_HYPOTHESIS_CHARS = 500
 MAX_TITLE_CHARS = 100
@@ -395,6 +399,45 @@ class GitHubClient:
         if not isinstance(commit_sha, str) or not SHA_RE.fullmatch(commit_sha):
             raise ControllerError("GitHub returned an invalid candidate commit SHA")
         return commit_sha
+
+    def candidate_at_commit(self, commit_sha: str) -> bytes:
+        if not SHA_RE.fullmatch(commit_sha):
+            raise ControllerError("refusing invalid candidate commit SHA")
+        encoded_path = urllib.parse.quote(CANDIDATE_PATH, safe="/")
+        query = urllib.parse.urlencode({"ref": commit_sha})
+        data = self.api(
+            "GET",
+            self.repo_path(f"/contents/{encoded_path}?{query}"),
+            limit=2_000_000,
+        )
+        if (
+            not isinstance(data, dict)
+            or data.get("type") != "file"
+            or data.get("path") != CANDIDATE_PATH
+            or data.get("encoding") != "base64"
+        ):
+            raise ControllerError("GitHub returned invalid best-candidate metadata")
+        content = data.get("content")
+        reported_size = data.get("size")
+        if (
+            not isinstance(content, str)
+            or isinstance(reported_size, bool)
+            or not isinstance(reported_size, int)
+            or reported_size < 1
+            or reported_size > MAX_CANDIDATE_BYTES
+        ):
+            raise ControllerError("GitHub returned an invalid best-candidate payload")
+        try:
+            candidate = base64.b64decode("".join(content.split()), validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ControllerError("GitHub returned invalid best-candidate base64") from exc
+        if len(candidate) != reported_size:
+            raise ControllerError("GitHub best-candidate size does not match")
+        try:
+            decoded = candidate.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ControllerError("GitHub best candidate is not valid UTF-8") from exc
+        return validate_candidate(decoded)
 
     def create_branch(self, branch: str, commit_sha: str) -> None:
         self.api(
@@ -852,6 +895,7 @@ class Controller:
         allowed_keys = {
             "status": {"version", "operation"},
             "start": {"version", "operation", "title"},
+            "restore-best": {"version", "operation"},
             "resume": {"version", "operation", "hypothesis", "timeout_seconds"},
             "submit": {
                 "version",
@@ -870,6 +914,8 @@ class Controller:
             return self.status()
         if operation == "start":
             return self.start(validate_title(request.get("title")))
+        if operation == "restore-best":
+            return self.restore_best()
         if operation == "resume":
             fallback_hypothesis = request.get("hypothesis")
             if fallback_hypothesis is not None:
@@ -936,6 +982,55 @@ class Controller:
         state_value["active_run"] = run
         self.state_store.save(state_value)
         return {"run_id": run_id, "branch": branch, "title": title}
+
+    def restore_best(self) -> dict[str, Any]:
+        state_value = self.state_store.load()
+        active = state_value.get("active_run")
+        if active is not None and not isinstance(active, dict):
+            raise ControllerError("controller active-run state is invalid")
+        best = active.get("best") if isinstance(active, dict) else None
+        if best is None:
+            candidate_sha = self.github.main_ref()
+            candidate = self.github.candidate_at_commit(candidate_sha)
+            return {
+                "available": True,
+                "source": "main",
+                "run_id": active.get("id") if isinstance(active, dict) else None,
+                "iteration": None,
+                "candidate_sha": candidate_sha,
+                "candidate_bytes": len(candidate),
+                "candidate_base64": base64.b64encode(candidate).decode("ascii"),
+            }
+        if not isinstance(best, dict):
+            raise ControllerError("active research best-candidate state is invalid")
+        candidate_sha = best.get("candidate_sha")
+        iteration = best.get("iteration")
+        if (
+            not isinstance(candidate_sha, str)
+            or not SHA_RE.fullmatch(candidate_sha)
+            or isinstance(iteration, bool)
+            or not isinstance(iteration, int)
+            or iteration < 1
+        ):
+            raise ControllerError("active research best-candidate state is invalid")
+        if not any(
+            isinstance(item, dict)
+            and item.get("candidate_sha") == candidate_sha
+            and item.get("iteration") == iteration
+            and item.get("decision") == "new best"
+            for item in active.get("history", [])
+        ):
+            raise ControllerError("best candidate is not backed by accepted history")
+        candidate = self.github.candidate_at_commit(candidate_sha)
+        return {
+            "available": True,
+            "source": "best",
+            "run_id": active.get("id"),
+            "iteration": iteration,
+            "candidate_sha": candidate_sha,
+            "candidate_bytes": len(candidate),
+            "candidate_base64": base64.b64encode(candidate).decode("ascii"),
+        }
 
     def _ensure_active_run(self, state_value: dict[str, Any]) -> dict[str, Any]:
         run = state_value.get("active_run")

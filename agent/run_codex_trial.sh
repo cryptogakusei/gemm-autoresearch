@@ -56,6 +56,7 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$RUNS_DIR/$STAMP-$$"
 mkdir -m 700 -- "$RUN_DIR"
 /usr/local/bin/gemmctl status >"$RUN_DIR/controller-status-before.json"
+/usr/local/bin/gemmctl restore-best >"$RUN_DIR/best-restore.json"
 
 set +e
 "$CODEX_BIN" --strict-config --ask-for-approval never exec \
