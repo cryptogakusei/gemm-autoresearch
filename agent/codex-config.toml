@@ -8,9 +8,8 @@ ignore_default_excludes = false
 
 [features]
 apps = false
-# The V8-backed code-mode host requires executable JIT memory. Keep the host
-# service's MemoryDenyWriteExecute boundary and use the regular shell backend.
-code_mode_host = false
+# Codex 0.147 routes command execution through this V8-backed host.
+code_mode_host = true
 goals = false
 hooks = false
 memories = false

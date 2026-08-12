@@ -45,7 +45,8 @@ RestrictNamespaces=user mnt pid ipc uts net
 RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
+# The sandboxed Codex code-mode helper embeds V8 and requires JIT memory.
+MemoryDenyWriteExecute=false
 SystemCallArchitectures=native
 InaccessiblePaths=/etc/gemm-autoresearch
 ReadWritePaths=/var/lib/gemm-agent/.codex
