@@ -1,7 +1,7 @@
 #include "candidate_api.h"
 
 namespace {
-constexpr int BM=128, BN=64, BK=16, TX=16, TY=16, TM=8, TN=4;
+constexpr int BM=128, BN=64, BK=32, TX=16, TY=16, TM=8, TN=4;
 
 template <bool UnitAlphaZeroBeta>
 __global__ void candidate_kernel(const float *__restrict__ A,
