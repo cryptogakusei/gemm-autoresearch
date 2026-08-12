@@ -1,7 +1,7 @@
 #include "candidate_api.h"
 
 namespace {
-constexpr int BM=128, BN=64, BK=32, TX=16, TY=16, TM=8, TN=4;
+constexpr int BM=128, BN=64, BK=32, TX=32, TY=8, TM=16, TN=2;
 
 template <bool UnitAlphaZeroBeta>
 __global__ void candidate_kernel(const float *__restrict__ A,
@@ -52,8 +52,8 @@ __global__ void candidate_kernel(const float *__restrict__ A,
 #pragma unroll
             for (int i=0;i<TM;++i) {
                 const int x=(br+tr+i)*N+bc+tc;
-                *reinterpret_cast<float4*>(C+x)=
-                    make_float4(acc[i][0],acc[i][1],acc[i][2],acc[i][3]);
+                *reinterpret_cast<float2*>(C+x)=
+                    make_float2(acc[i][0],acc[i][1]);
             }
         } else {
 #pragma unroll
