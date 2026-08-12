@@ -37,7 +37,10 @@ ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectProc=invisible
 ProtectSystem=strict
-ProcSubset=pid
+# Codex's bubblewrap helper reads /proc/sys/kernel/overflow{u,g}id while
+# constructing its inner sandbox. ProtectKernelTunables keeps /proc/sys
+# read-only, and ProtectProc continues hiding other users' processes.
+ProcSubset=all
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # Codex's bubblewrap sandbox needs these namespace types. Keep cgroup
 # namespaces prohibited by omitting them from the allowlist.

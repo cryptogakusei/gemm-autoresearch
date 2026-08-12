@@ -119,6 +119,9 @@ Codex 0.147 routes command execution through its V8-backed code-mode host, so
 the service permits executable JIT memory. The surrounding isolation remains:
 the agent is unprivileged and its bubblewrap/seccomp profile still blocks the
 internet, GPU, credential cache, and writes outside the candidate directory.
+The outer service exposes the full `/proc` API because bubblewrap needs the
+kernel overflow UID/GID values, while `ProtectKernelTunables=true` keeps kernel
+tunables read-only and `ProtectProc=invisible` hides other users' processes.
 After Codex exits, the root-installed wrapper also compares trusted controller
 state from before and after the run. The unit fails unless a new, completed
 experiment result was recorded, even if Codex itself exits zero.
