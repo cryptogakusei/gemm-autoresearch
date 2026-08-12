@@ -14,13 +14,19 @@ __global__ void candidate_kernel(const float *__restrict__ A,
     const int tr=threadIdx.y*TM, tc=threadIdx.x*TN;
     float acc[TM][TN]={};
     for (int k0=0; k0<K; k0+=BK) {
-        for (int x=tid; x<BM*BK; x+=TX*TY) {
-            const int r=x/BK, k=x%BK, gr=br+r;
-            As[r][k]=(gr<M && k0+k<K) ? A[gr*K+k0+k] : 0.0f;
+        for (int x=tid; x<BM*(BK/4); x+=TX*TY) {
+            const int r=x/(BK/4), q=x%(BK/4), gr=br+r;
+            const float4 v=(gr<M)
+                ? *reinterpret_cast<const float4*>(A+gr*K+k0+4*q)
+                : make_float4(0.0f,0.0f,0.0f,0.0f);
+            *reinterpret_cast<float4*>(&As[r][4*q])=v;
         }
-        for (int x=tid; x<BK*BN; x+=TX*TY) {
-            const int k=x/BN, c=x%BN, gc=bc+c;
-            Bs[k][c]=(k0+k<K && gc<N) ? B[(k0+k)*N+gc] : 0.0f;
+        for (int x=tid; x<BK*(BN/4); x+=TX*TY) {
+            const int k=x/(BN/4), q=x%(BN/4), gc=bc+4*q;
+            const float4 v=(gc+3<N)
+                ? *reinterpret_cast<const float4*>(B+(k0+k)*N+gc)
+                : make_float4(0.0f,0.0f,0.0f,0.0f);
+            *reinterpret_cast<float4*>(&Bs[k][4*q])=v;
         }
         __syncthreads();
 #pragma unroll
